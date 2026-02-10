@@ -5,3 +5,5 @@ matplotlib
 seaborn
 xlsxwriter
 openpyxl
+gspread
+oauth2client
