@@ -1,9 +1,45 @@
-streamlit
-pandas
-numpy
-matplotlib
-seaborn
-xlsxwriter
-openpyxl
-gspread
-oauth2client
+# ==========================================
+# Core Streamlit Application
+# ==========================================
+streamlit>=1.30.0
+
+# ==========================================
+# Data Processing
+# ==========================================
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0  # Excel file support
+
+# ==========================================
+# Visualization
+# ==========================================
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# ==========================================
+# Excel Generation
+# ==========================================
+xlsxwriter>=3.1.0
+
+# ==========================================
+# Google Sheets Integration (UPDATED)
+# ==========================================
+gspread>=5.11.0
+google-auth>=2.23.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.1.1
+
+# ==========================================
+# Utilities
+# ==========================================
+python-dateutil>=2.8.2
+
+# ==========================================
+# Monitoring (Optional)
+# ==========================================
+psutil>=5.9.0  # For memory monitoring
+
+# ==========================================
+# REMOVED (Deprecated/Unnecessary)
+# ==========================================
+# oauth2client  ❌ REMOVED - Deprecated since 2017
