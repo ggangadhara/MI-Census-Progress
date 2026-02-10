@@ -7,30 +7,29 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.patches import Patch
+import xlsxwriter
 import io
 import base64
 import re
+import textwrap
 import json
 import gc
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
-from functools import lru_cache
-import hashlib
 
-# Google Sheets - USE UPDATED LIBRARY
+# --- GOOGLE SHEETS LIBRARIES (UPDATED FOR SECURITY) ---
 import gspread
-from google.oauth2.service_account import Credentials  # ✅ Updated from oauth2client
+from google.oauth2.service_account import Credentials  # ✅ FIXED: Updated from oauth2client
 
 # ==========================================
-# 1. MEMORY-EFFICIENT CONFIGURATION
+# 1. CONFIGURATION & CONSTANTS (UNCHANGED)
 # ==========================================
 class AppConfig:
-    VERSION = "V171_OPTIMIZED_MULTI_USER"
+    VERSION = "V171_MEMORY_OPTIMIZED"  # Version updated
     SESSION_TIMEOUT_MINUTES = 30
-    MAX_UPLOAD_SIZE_MB = 10
     
-    # User mapping (unchanged)
+    # Authorized Personnel (UNCHANGED)
     USER_MAP = {
         "Chethan_NGM": "Nagamangala Taluk",
         "Gangadhar_MLV": "Malavalli Taluk",
@@ -45,7 +44,7 @@ class AppConfig:
     _officers = sorted([u for u in USER_MAP.keys() if u != "Mandya_Admin"])
     AUTHORIZED_USERS = _officers + ["Mandya_Admin"]
     
-    # Unchanged colors
+    # COLORS (UNCHANGED)
     COLORS = {
         "primary": "#1a73e8", "success": "#34A853", "warning": "#FBBC04",
         "danger": "#EA4335", "light_red": "#EE675C", "neutral": "#DADCE0",
@@ -64,17 +63,15 @@ class AppConfig:
 # 2. SECURE CREDENTIAL MANAGEMENT
 # ==========================================
 def get_password() -> str:
-    """✅ Fetch password from Streamlit secrets (not hardcoded)"""
+    """✅ FIXED: Password from secrets instead of hardcoded"""
     try:
         return st.secrets["app"]["password"]
     except:
-        # Fallback for local testing only
-        return os.environ.get("APP_PASSWORD", "mandya")
+        return os.environ.get("APP_PASSWORD", "mandya")  # Fallback for local testing
 
-def get_google_credentials() -> Optional[Credentials]:
-    """✅ Secure credential loading from Streamlit secrets"""
+def get_google_credentials():
+    """✅ FIXED: Use updated google-auth library"""
     try:
-        # Method 1: From Streamlit secrets (RECOMMENDED)
         creds_dict = dict(st.secrets["gcp_service_account"])
         scopes = [
             'https://www.googleapis.com/auth/spreadsheets',
@@ -82,421 +79,552 @@ def get_google_credentials() -> Optional[Credentials]:
         ]
         return Credentials.from_service_account_info(creds_dict, scopes=scopes)
     except:
-        # Method 2: From JSON file (local testing)
-        json_path = os.environ.get("GOOGLE_CREDS_PATH", "service_account.json")
-        if os.path.exists(json_path):
-            return Credentials.from_service_account_file(json_path, scopes=scopes)
         return None
 
 # ==========================================
-# 3. MEMORY-EFFICIENT GOOGLE SHEETS
+# 3. SYSTEM BOOTSTRAP (UNCHANGED)
 # ==========================================
-@st.cache_resource(ttl=3600)  # ✅ Cache connection, not data
-def get_sheets_client():
-    """Singleton Google Sheets client"""
-    creds = get_google_credentials()
-    if not creds:
-        return None
-    return gspread.authorize(creds)
+def setup_config():
+    config_dir = ".streamlit"
+    config_path = os.path.join(config_dir, "config.toml")
+    config_content = f"""
+[server]
+maxUploadSize = 200
+enableCORS = false
+enableXsrfProtection = false
+headless = true
+enableWebsocketCompression = false
+websocketPingTimeout = 300
+[theme]
+primaryColor = "{AppConfig.COLORS['primary']}"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f8f9fa"
+textColor = "{AppConfig.COLORS['text']}"
+font = "sans serif"
+[browser]
+gatherUsageStats = false
+    """
+    if not os.path.exists(config_dir): os.makedirs(config_dir)
+    with open(config_path, "w") as f: f.write(config_content.strip())
 
-class SheetsManager:
-    """✅ Efficient batch operations to minimize API calls"""
-    
-    @staticmethod
-    def save_master_file(user: str, df: pd.DataFrame, sheet_url: str) -> bool:
-        """Save master assignment to user-specific sheet"""
-        try:
-            client = get_sheets_client()
-            if not client:
-                return False
-            
-            # Open or create worksheet
-            spreadsheet = client.open_by_url(sheet_url)
-            worksheet_name = f"{user}_master"
-            
-            try:
-                worksheet = spreadsheet.worksheet(worksheet_name)
-            except:
-                worksheet = spreadsheet.add_worksheet(worksheet_name, rows=1000, cols=20)
-            
-            # ✅ Clear and batch update (1 API call instead of row-by-row)
-            worksheet.clear()
-            worksheet.update([df.columns.values.tolist()] + df.values.tolist())
-            return True
-        except Exception as e:
-            st.error(f"Sheets error: {e}")
-            return False
-    
-    @staticmethod
-    def get_master_file(user: str, sheet_url: str) -> Optional[pd.DataFrame]:
-        """Retrieve master file from sheets"""
-        try:
-            client = get_sheets_client()
-            if not client:
-                return None
-            
-            spreadsheet = client.open_by_url(sheet_url)
-            worksheet = spreadsheet.worksheet(f"{user}_master")
-            
-            data = worksheet.get_all_values()
-            if not data:
-                return None
-            
-            return pd.DataFrame(data[1:], columns=data[0])
-        except:
-            return None
-    
-    @staticmethod
-    def save_metrics_batch(metrics_list: List[Dict], sheet_url: str):
-        """✅ Batch save all taluk metrics (1 API call)"""
-        try:
-            client = get_sheets_client()
-            if not client:
-                return
-            
-            spreadsheet = client.open_by_url(sheet_url)
-            
-            try:
-                worksheet = spreadsheet.worksheet("Taluk_Metrics")
-            except:
-                worksheet = spreadsheet.add_worksheet("Taluk_Metrics", rows=1000, cols=20)
-            
-            # Prepare data
-            if not metrics_list:
-                return
-            
-            headers = list(metrics_list[0].keys())
-            rows = [headers] + [[m.get(h, "") for h in headers] for m in metrics_list]
-            
-            worksheet.clear()
-            worksheet.update(rows)
-        except Exception as e:
-            st.warning(f"Metrics sync failed: {e}")
+setup_config()
+st.set_page_config(page_title="MI Census Pro V171", layout="wide", initial_sidebar_state="collapsed")
 
 # ==========================================
-# 4. MEMORY-EFFICIENT DATA LOADING
+# 4. CORE UTILITIES
 # ==========================================
-def get_file_hash(uploaded_file) -> str:
-    """Generate hash for file caching"""
-    if uploaded_file is None:
-        return ""
-    return hashlib.md5(uploaded_file.getvalue()).hexdigest()
+@st.cache_data(show_spinner=False, ttl=3600)
+def get_base64_image(image_path: str) -> Optional[str]:
+    """UNCHANGED - Logo handling"""
+    if not os.path.exists(image_path): return None
+    with open(image_path, "rb") as img_file:
+        return base64.b64encode(img_file.read()).decode()
 
-@st.cache_data(ttl=300, max_entries=10)  # ✅ Cache per user (10 users max)
-def load_dataframe_chunked(file_content: bytes, file_hash: str, file_type: str) -> Optional[pd.DataFrame]:
-    """✅ Load dataframe with memory limit enforcement"""
+# ✅ FIXED: Per-user caching with file hash to prevent thrashing
+@st.cache_data(show_spinner=False, ttl=600, max_entries=15)  # Increased from 1 to 15
+def smart_load_dataframe(file_content: bytes, file_hash: str, file_ext: str) -> Optional[pd.DataFrame]:
+    """✅ FIXED: Cache by file content hash, not path (supports multiple users)"""
     try:
         file_obj = io.BytesIO(file_content)
-        
-        if file_type == 'csv':
-            # ✅ Read in chunks to check size
-            df = pd.read_csv(file_obj, nrows=1000)  # Sample first
-            if len(df) > 10000:  # Limit to 10k rows
-                st.warning("⚠️ Large file detected. Loading first 10,000 rows only.")
-                file_obj.seek(0)
-                df = pd.read_csv(file_obj, nrows=10000)
-            else:
-                file_obj.seek(0)
-                df = pd.read_csv(file_obj)
+        if file_ext in ['xlsx', 'xls']:
+            return pd.read_excel(file_obj)
         else:
-            df = pd.read_excel(file_obj, nrows=10000)
-        
-        return df
-    except Exception as e:
-        st.error(f"Load error: {e}")
+            try: 
+                return pd.read_csv(file_obj, encoding='utf-8')
+            except: 
+                file_obj.seek(0)
+                return pd.read_csv(file_obj, encoding='latin1')
+    except:
         return None
 
-# ==========================================
-# 5. SECURE FILE VALIDATION
-# ==========================================
-def validate_upload(uploaded_file, max_size_mb: int = 10) -> tuple[bool, str]:
-    """✅ Validate uploaded files"""
+def clean_name_logic(name: Any) -> str:
+    """UNCHANGED"""
+    if pd.isna(name): return "UNKNOWN"
+    name = str(name).upper()
+    name = re.sub(r'\(.*?\)', '', name)
+    name = name.replace('.', ' ')
+    name = re.sub(r'\b(MR|MRS|MS|DR|SRI|SMT)\b', '', name)
+    name = re.sub(r'[^A-Z\s]', '', name)
+    return " ".join(name.strip().split())
+
+# ✅ FIXED: Add file validation
+def validate_upload(uploaded_file, max_size_mb: int = 10) -> tuple:
+    """✅ NEW: Validate file uploads"""
     if uploaded_file is None:
         return False, "No file uploaded"
     
-    # Check size
     file_size_mb = len(uploaded_file.getvalue()) / (1024 * 1024)
     if file_size_mb > max_size_mb:
-        return False, f"File too large: {file_size_mb:.2f}MB (max: {max_size_mb}MB)"
-    
-    # Check file type
-    allowed_types = ['xlsx', 'csv']
-    file_ext = uploaded_file.name.split('.')[-1].lower()
-    if file_ext not in allowed_types:
-        return False, f"Invalid file type: {file_ext}"
+        return False, f"File too large: {file_size_mb:.1f}MB (max: {max_size_mb}MB)"
     
     return True, "Valid"
 
-# ==========================================
-# 6. MEMORY-EFFICIENT VISUALIZATION
-# ==========================================
-@st.cache_data(ttl=600, max_entries=15)  # ✅ Cache per user/date combo
-def generate_progress_chart(data: Dict, chart_hash: str) -> bytes:
-    """✅ Generate compressed chart"""
-    fig, ax = plt.subplots(figsize=(10, 6), dpi=72)  # ✅ Lower DPI = less memory
-    
-    # Your chart logic here (simplified)
-    names = data.get('names', [])
-    values = data.get('values', [])
-    
-    ax.barh(names, values, color='#1967d2')
-    ax.set_xlabel('Progress')
-    ax.set_title('VAO Progress')
-    
-    plt.tight_layout()
-    
-    # ✅ Save as compressed PNG
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=72, bbox_inches='tight')
-    plt.close(fig)  # ✅ CRITICAL: Free memory
-    
-    buf.seek(0)
-    return buf.getvalue()
+def save_file_robust(uploaded_file, target_path: str) -> bool:
+    """UNCHANGED"""
+    if uploaded_file is None: return False
+    try:
+        with open(target_path, "wb") as f: f.write(uploaded_file.getvalue())
+        return True
+    except: return False
 
-def create_excel_report(df: pd.DataFrame) -> bytes:
-    """✅ Stream Excel to bytes without storing in session"""
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Report')
-    output.seek(0)
-    return output.getvalue()
-
-# ==========================================
-# 7. CONCURRENT USER SESSION MANAGEMENT
-# ==========================================
-def init_session():
-    """Initialize user-specific session"""
-    if 'user_id' not in st.session_state:
-        st.session_state['user_id'] = str(time.time())  # Unique session ID
-    
-    if 'logged_in' not in st.session_state:
-        st.session_state['logged_in'] = False
-    
-    if 'cache_buster' not in st.session_state:
-        st.session_state['cache_buster'] = 0
-
+# --- SESSION & DATA ---
 def check_session_timeout():
-    """✅ Enforce session timeout"""
+    """UNCHANGED"""
     if 'last_active' not in st.session_state:
         st.session_state['last_active'] = time.time()
-        return False
-    
-    elapsed = time.time() - st.session_state['last_active']
-    if elapsed > (AppConfig.SESSION_TIMEOUT_MINUTES * 60):
+        return
+    if (time.time() - st.session_state['last_active']) > (AppConfig.SESSION_TIMEOUT_MINUTES * 60):
         st.session_state.clear()
-        return True
-    
+        st.session_state['logged_in'] = False
+        st.rerun()
     st.session_state['last_active'] = time.time()
-    return False
+
+def save_taluk_metrics(taluk_name: str, metrics: Dict):
+    """UNCHANGED - Keeps local file saving"""
+    data_dir = "central_data"
+    if not os.path.exists(data_dir): os.makedirs(data_dir)
+    
+    # Save Latest JSON
+    safe_metrics = {}
+    for k, v in metrics.items():
+        if isinstance(v, (np.integer, np.int64)): safe_metrics[k] = int(v)
+        elif isinstance(v, (np.floating, np.float64)): safe_metrics[k] = float(v)
+        else: safe_metrics[k] = v
+    safe_metrics['timestamp'] = datetime.now().isoformat()
+    safe_metrics['taluk'] = taluk_name
+    
+    with open(os.path.join(data_dir, f"{taluk_name.replace(' ', '_')}.json"), "w") as f:
+        json.dump(safe_metrics, f)
+
+    # Save Local History (CSV)
+    history_path = os.path.join(data_dir, "daily_history.csv")
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    new_row = {
+        "Date": today_str, "Taluk": taluk_name,
+        "GW": safe_metrics['gw'], "SW": safe_metrics['sw'], "WB": safe_metrics['wb'],
+        "Total": safe_metrics['total_villages'], "Completed": safe_metrics['completed_v'],
+        "InProgress": safe_metrics['in_progress'], "NotStarted": safe_metrics['not_started'],
+        "Submitted": safe_metrics['submitted_v']
+    }
+    
+    df_new = pd.DataFrame([new_row])
+    if os.path.exists(history_path):
+        df_hist = pd.read_csv(history_path)
+        df_hist = pd.concat([df_hist, df_new], ignore_index=True)
+        df_hist = df_hist.drop_duplicates(subset=['Date', 'Taluk'], keep='last')
+        df_hist.to_csv(history_path, index=False)
+    else:
+        df_new.to_csv(history_path, index=False)
+
+# ✅ FIXED: Google Sheets with updated library and batch operations
+def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name: str) -> str:
+    """✅ FIXED: Uses updated google-auth and batch operations"""
+    try:
+        scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+        creds = Credentials.from_service_account_info(json_key_dict, scopes=scopes)
+        client = gspread.authorize(creds)
+        
+        spreadsheet = client.open(sheet_name)
+        try:
+            worksheet = spreadsheet.worksheet("TalukData")
+        except:
+            worksheet = spreadsheet.add_worksheet("TalukData", rows=1000, cols=20)
+        
+        # ✅ FIXED: Batch update instead of row-by-row
+        worksheet.clear()
+        data = [df.columns.values.tolist()] + df.values.tolist()
+        worksheet.update(data, value_input_option='USER_ENTERED')
+        
+        return f"✅ Synced {len(df)} rows to Google Sheets"
+    except Exception as e:
+        return f"❌ Sync failed: {str(e)}"
+
+def get_all_taluk_data() -> List[Dict]:
+    """UNCHANGED"""
+    data_dir = "central_data"
+    results = []
+    if not os.path.exists(data_dir): return results
+    for fname in os.listdir(data_dir):
+        if fname.endswith('.json') and fname != 'daily_history.csv':
+            with open(os.path.join(data_dir, fname), 'r') as f:
+                results.append(json.load(f))
+    return results
+
+def get_history_data(target_date) -> Dict[str, int]:
+    """UNCHANGED"""
+    history_path = os.path.join("central_data", "daily_history.csv")
+    if not os.path.exists(history_path): return {}
+    df = pd.read_csv(history_path)
+    date_str = target_date.strftime('%Y-%m-%d')
+    df_filtered = df[df['Date'] == date_str]
+    return dict(zip(df_filtered['Taluk'], df_filtered['GW']))
 
 # ==========================================
-# 8. OPTIMIZED ADMIN DASHBOARD
+# 5. CSS INJECTION (UNCHANGED)
+# ==========================================
+def inject_custom_css():
+    """UNCHANGED - All original styling preserved"""
+    st.markdown(f"""
+    <style>
+    .stApp {{ background: {AppConfig.COLORS['bg_light']}; }}
+    .section-header {{ 
+        font-size: 1.1rem; font-weight: 600; color: {AppConfig.COLORS['primary']}; 
+        margin: 1rem 0 0.5rem 0; padding-bottom: 0.5rem; 
+        border-bottom: 2px solid {AppConfig.COLORS['neutral']};
+    }}
+    .status-pill {{
+        display: inline-block; padding: 0.5rem 1rem; border-radius: 8px;
+        background: {AppConfig.COLORS['success']}15; color: {AppConfig.COLORS['success']};
+        font-weight: 600; font-size: 0.95rem; margin: 0.5rem 0;
+    }}
+    .table {{ 
+        width: 100%; border-collapse: collapse; margin: 1rem 0; 
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    }}
+    .table th {{ 
+        background: {AppConfig.COLORS['primary']}; color: white; padding: 12px; 
+        text-align: left; font-weight: 600; border: 1px solid #ddd;
+    }}
+    .table td {{ 
+        padding: 10px; border: 1px solid #ddd; background: white;
+    }}
+    .table tr:last-child td {{ 
+        background: {AppConfig.COLORS['table_green']}; font-weight: bold; color: #1a1a1a;
+    }}
+    </style>
+    """, unsafe_allow_html=True)
+
+# ==========================================
+# 6. REPORT GENERATION (MEMORY OPTIMIZED)
+# ==========================================
+def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, 
+                        taluk_name: str, v_completed: int, v_submitted: int) -> Dict[str, bytes]:
+    """✅ FIXED: Memory-optimized report generation"""
+    
+    # Process data
+    df_assign = df_assign.copy()
+    df_assign.columns = df_assign.columns.str.strip()
+    
+    if 'VAO Name' in df_assign.columns:
+        df_assign['clean_name'] = df_assign['VAO Name'].apply(clean_name_logic)
+    else:
+        df_assign['clean_name'] = "UNKNOWN"
+    
+    df_monitor = df_monitor.copy()
+    if 'User Name' in df_monitor.columns:
+        df_monitor['clean_monitor'] = df_monitor['User Name'].apply(clean_name_logic)
+        vao_counts = df_monitor['clean_monitor'].value_counts().to_dict()
+    else:
+        vao_counts = {}
+    
+    df_assign['Completed_GW'] = df_assign['clean_name'].map(vao_counts).fillna(0).astype(int)
+    
+    vao_col = 'VAO Name' if 'VAO Name' in df_assign.columns else df_assign.columns[0]
+    vill_col = None
+    for c in df_assign.columns:
+        if 'village' in c.lower(): vill_col = c; break
+    if vill_col is None: vill_col = df_assign.columns[1] if len(df_assign.columns) > 1 else df_assign.columns[0]
+    
+    total_vill = len(df_assign)
+    total_gw = df_assign['Completed_GW'].sum()
+    
+    # ✅ FIXED: Reduce matplotlib DPI for memory efficiency
+    fig, ax = plt.subplots(figsize=(12, max(6, len(df_assign) * 0.3)), dpi=100)  # Reduced from 300
+    
+    vao_summary = df_assign.groupby('clean_name')['Completed_GW'].sum().sort_values(ascending=True)
+    vao_names_display = [n if n != "UNKNOWN" else "Not Assigned" for n in vao_summary.index]
+    
+    colors_list = [AppConfig.TALUK_COLORS.get(taluk_name, AppConfig.COLORS['primary'])] * len(vao_summary)
+    bars = ax.barh(vao_names_display, vao_summary.values, color=colors_list, edgecolor='white', linewidth=1.2)
+    
+    for bar, val in zip(bars, vao_summary.values):
+        width = bar.get_width()
+        ax.text(width + 1, bar.get_y() + bar.get_height()/2, f'{int(val)}', 
+                va='center', fontsize=10, fontweight='bold')
+    
+    ax.set_xlabel('Completed Ground Water Schedules', fontsize=12, fontweight='bold')
+    ax.set_title(f'{taluk_name} - VAO Progress Report', fontsize=14, fontweight='bold', pad=20)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    plt.tight_layout()
+    
+    # ✅ FIXED: Save with lower DPI and immediately close
+    buf_graph = io.BytesIO()
+    fig.savefig(buf_graph, format='png', dpi=100, bbox_inches='tight')  # Reduced DPI
+    plt.close(fig)  # ✅ CRITICAL: Free memory immediately
+    buf_graph.seek(0)
+    graph_bytes = buf_graph.getvalue()
+    
+    # Excel generation (unchanged)
+    buf_excel = io.BytesIO()
+    with pd.ExcelWriter(buf_excel, engine='xlsxwriter') as writer:
+        df_out = df_assign[[vao_col, vill_col, 'Completed_GW']].copy()
+        df_out.columns = ['VAO Name', 'Village Name', 'GW Completed']
+        df_out.to_excel(writer, sheet_name='Progress', index=False)
+    buf_excel.seek(0)
+    excel_bytes = buf_excel.getvalue()
+    
+    # Status card generation
+    gw = int(total_gw)
+    sw = 0
+    wb = 0
+    in_prog = max(0, total_vill - v_completed)
+    not_started = max(0, total_vill - v_completed - in_prog)
+    
+    metrics = {
+        'gw': gw, 'sw': sw, 'wb': wb, 'total_villages': total_vill,
+        'completed_v': v_completed, 'in_progress': in_prog, 'not_started': not_started,
+        'submitted_v': v_submitted
+    }
+    save_taluk_metrics(taluk_name, metrics)
+    
+    # ✅ FIXED: Reduce card image DPI
+    fig2, ax2 = plt.subplots(figsize=(8, 5), dpi=100)  # Reduced from 150
+    ax2.axis('off')
+    
+    title_text = f"{taluk_name}\nProgress Card"
+    ax2.text(0.5, 0.88, title_text, ha='center', va='top', fontsize=18, fontweight='bold',
+             color=AppConfig.COLORS['primary'], transform=ax2.transAxes)
+    
+    metrics_text = f"""
+Total Villages: {total_vill}
+Completed: {v_completed} | In Progress: {in_prog} | Not Started: {not_started}
+
+Ground Water: {gw} | Surface Water: {sw} | Water Body: {wb}
+Submitted: {v_submitted}
+    """
+    
+    ax2.text(0.5, 0.45, metrics_text, ha='center', va='center', fontsize=13,
+             transform=ax2.transAxes, bbox=dict(boxstyle='round,pad=1', 
+             facecolor=AppConfig.COLORS['bg_secondary'], edgecolor=AppConfig.COLORS['neutral']))
+    
+    plt.tight_layout()
+    buf_card = io.BytesIO()
+    fig2.savefig(buf_card, format='png', dpi=100, bbox_inches='tight')  # Reduced DPI
+    plt.close(fig2)  # ✅ CRITICAL: Free memory
+    buf_card.seek(0)
+    card_bytes = buf_card.getvalue()
+    
+    # ✅ FIXED: Clean up DataFrames
+    del df_assign
+    del df_monitor
+    gc.collect()  # Force garbage collection
+    
+    return {'g': graph_bytes, 'x': excel_bytes, 'c': card_bytes}
+
+# ==========================================
+# 7. ADMIN DASHBOARD (UNCHANGED UI)
 # ==========================================
 def render_admin_dashboard():
-    """Admin view with Google Sheets integration"""
-    st.markdown("## 📊 District Dashboard")
+    """UNCHANGED - Original admin dashboard preserved"""
+    st.markdown(f'<div class="section-header">📊 District Abstract Report</div>', unsafe_allow_html=True)
     
-    # ✅ Sheets URL from secrets
-    sheet_url = st.secrets.get("sheets", {}).get("admin_sheet_url", "")
-    
-    if not sheet_url:
-        st.error("⚠️ Admin sheet URL not configured in secrets")
-        st.info("Add to .streamlit/secrets.toml:\n```\n[sheets]\nadmin_sheet_url = 'YOUR_GOOGLE_SHEET_URL'\n```")
-        return
-    
-    # Get all taluk data from sheets
-    client = get_sheets_client()
-    if not client:
-        st.error("Cannot connect to Google Sheets")
-        return
-    
-    try:
-        spreadsheet = client.open_by_url(sheet_url)
-        worksheet = spreadsheet.worksheet("Taluk_Metrics")
-        data = worksheet.get_all_records()
+    # Google Sheets Sync (optional - unchanged)
+    with st.expander("🔄 Sync to Google Sheets (Optional)"):
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            sheet_name = st.text_input("Sheet Name", "Mandya_Census_Data")
+        with col2:
+            st.markdown("<div style='height: 1.5rem;'></div>", unsafe_allow_html=True)
         
-        if data:
-            df = pd.DataFrame(data)
-            st.dataframe(df, use_container_width=True)
-            
-            # ✅ Download button (not stored in session)
-            csv_data = df.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                "📥 Download Report",
-                csv_data,
-                "district_report.csv",
-                "text/csv"
-            )
-        else:
-            st.info("No data available yet")
-            
-    except Exception as e:
-        st.error(f"Error loading data: {e}")
+        json_file = st.file_uploader("Upload Service Account JSON", type=['json'])
+        if json_file and st.button("Sync Now"):
+            try:
+                json_key = json.load(json_file)
+                taluk_data = get_all_taluk_data()
+                if not taluk_data:
+                    st.warning("No taluk data found")
+                else:
+                    df_sync = pd.DataFrame(taluk_data)
+                with st.spinner("Syncing..."):
+                    st.success(sync_data_to_google_sheet(df_sync, json_key, sheet_name))
+            except Exception as e: 
+                st.error(str(e))
+
+    st.markdown("---")
+    
+    c1, c2, c3 = st.columns([2, 2, 4])
+    with c1: prev_date = st.date_input("Previous Date", value=datetime.now() - timedelta(days=1))
+    with c2: curr_date = st.date_input("Current Date", value=datetime.now())
+    
+    taluk_data = get_all_taluk_data()
+    prev_data_map = get_history_data(prev_date)
+    rows = []
+    for idx, t in enumerate(taluk_data):
+        curr_gw = t['gw']
+        prev_gw = prev_data_map.get(t['taluk'], 0)
+        row = {
+            "Sl. No": idx + 1, "State": "KARNATAKA", "District": "Mandya", "Taluk": t['taluk'].replace(" Taluk", ""),
+            "Total Villages": t['total_villages'], "No. of Completed Villages": t['completed_v'],
+            "No. of Villages where work is in progress": t['in_progress'], "No. of Villages where work has not started": t['not_started'],
+            "Number of Ground Water schedules submitted by enumerators": t['gw'],
+            "Number of Surface Water schedules submitted by enumerators": t['sw'],
+            "Number of Water Body schedules submitted by enumerators": t['wb'],
+            "Number of Villages submitted by enumerators": t['submitted_v'],
+            f"{prev_date.strftime('%d.%m.%Y')}": prev_gw, f"{curr_date.strftime('%d.%m.%Y')}": curr_gw, "Difference": curr_gw - prev_gw 
+        }
+        rows.append(row)
+    
+    if not rows: st.warning("No data found."); return
+    df = pd.DataFrame(rows)
+    total_row = {
+        "Sl. No": "Total", "State": "", "District": "", "Taluk": "",
+        "Total Villages": df["Total Villages"].sum(), "No. of Completed Villages": df["No. of Completed Villages"].sum(),
+        "No. of Villages where work is in progress": df["No. of Villages where work is in progress"].sum(),
+        "No. of Villages where work has not started": df["No. of Villages where work has not started"].sum(),
+        "Number of Ground Water schedules submitted by enumerators": df["Number of Ground Water schedules submitted by enumerators"].sum(),
+        "Number of Surface Water schedules submitted by enumerators": df["Number of Surface Water schedules submitted by enumerators"].sum(),
+        "Number of Water Body schedules submitted by enumerators": df["Number of Water Body schedules submitted by enumerators"].sum(),
+        "Number of Villages submitted by enumerators": df["Number of Villages submitted by enumerators"].sum(),
+        f"{prev_date.strftime('%d.%m.%Y')}": df[f"{prev_date.strftime('%d.%m.%Y')}"].sum(), 
+        f"{curr_date.strftime('%d.%m.%Y')}": df[f"{curr_date.strftime('%d.%m.%Y')}"].sum(), 
+        "Difference": df["Difference"].sum()
+    }
+    df = pd.concat([df, pd.DataFrame([total_row])], ignore_index=True)
+    
+    st.markdown(df.to_html(index=False, classes='table'), unsafe_allow_html=True)
+    st.download_button("📥 Download CSV", df.to_csv(index=False).encode('utf-8'), "Mandya_Abstract.csv", "text/csv")
 
 # ==========================================
-# 9. OPTIMIZED MAIN APP
+# 8. MAIN APP (UI UNCHANGED, MEMORY OPTIMIZED)
 # ==========================================
 def main():
-    st.set_page_config(
-        page_title="MI Census Pro",
-        layout="wide",
-        initial_sidebar_state="collapsed"
-    )
+    inject_custom_css()
+    if 'logged_in' not in st.session_state: st.session_state['logged_in'] = False
     
-    init_session()
+    if st.session_state['logged_in']:
+        check_session_timeout()
     
-    # ✅ Check timeout
-    if st.session_state.get('logged_in') and check_session_timeout():
-        st.warning("⏰ Session expired. Please login again.")
-        st.rerun()
-    
-    # Login screen
+    # LOGIN SCREEN (UNCHANGED)
     if not st.session_state['logged_in']:
-        st.title("🔐 Secure Login")
-        
-        with st.form("login_form"):
-            user = st.selectbox("Select Officer", [""] + AppConfig.AUTHORIZED_USERS)
-            pwd = st.text_input("Password", type="password")
-            
-            if st.form_submit_button("Login"):
-                if user and pwd == get_password():
-                    st.session_state['logged_in'] = True
-                    st.session_state['user'] = user
-                    st.session_state['last_active'] = time.time()
-                    st.rerun()
-                else:
-                    st.error("❌ Invalid credentials")
+        _, col_center, _ = st.columns([0.1, 0.8, 0.1])
+        with col_center:
+            img_base64 = get_base64_image("logo.png")
+            if img_base64: st.markdown(f'<div style="display:flex;justify-content:center;margin-bottom:1rem;"><img src="data:image/png;base64,{img_base64}" width="160" style="border-radius:12px;"></div>', unsafe_allow_html=True)
+            st.markdown("<h2 style='text-align:center;'>7th Minor Irrigation Census</h2><p style='text-align:center;color:#5f6368;'>Secure Progress Monitoring System</p>", unsafe_allow_html=True)
+            with st.form("login_form"):
+                user = st.selectbox("Select Officer", ["Select..."] + AppConfig.AUTHORIZED_USERS)
+                pwd = st.text_input("Password", type="password")
+                if st.form_submit_button("Secure Login", type="primary", use_container_width=True):
+                    # ✅ FIXED: Password from secrets
+                    if user != "Select..." and pwd == get_password():
+                        st.session_state['logged_in'] = True; st.session_state['user'] = user; st.session_state['last_active'] = time.time(); st.rerun()
+                    else: st.error("⛔ Incorrect Password")
+        st.markdown("<div style='height: 50vh;'></div>", unsafe_allow_html=True)
         return
-    
-    # Main app
+
     user = st.session_state['user']
-    
-    # Logout button
-    col1, col2 = st.columns([0.85, 0.15])
-    with col1:
-        st.title(f"📊 {AppConfig.USER_MAP.get(user, 'Admin')}")
-    with col2:
-        if st.button("🚪 Logout"):
-            st.session_state.clear()
-            st.rerun()
-    
     if user == "Mandya_Admin":
-        render_admin_dashboard()
-        return
-    
-    # Officer dashboard
-    st.markdown("---")
-    
-    # ✅ Get sheet URL from secrets
-    sheet_url = st.secrets.get("sheets", {}).get("main_sheet_url", "")
-    if not sheet_url:
-        st.error("Sheet URL not configured")
-        return
-    
-    # Master file upload
-    st.subheader("📂 Master Data")
-    
-    master_uploaded = st.file_uploader(
-        "Upload Master Assignment",
-        type=['xlsx', 'csv'],
-        key="master_upload"
-    )
-    
-    if master_uploaded:
-        valid, msg = validate_upload(master_uploaded, AppConfig.MAX_UPLOAD_SIZE_MB)
-        if not valid:
-            st.error(msg)
+        st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;'><h3>👤 Administrator</h3></div>", unsafe_allow_html=True)
+        if st.button("Log Out"): st.session_state.clear(); st.rerun()
+        st.markdown("---"); render_admin_dashboard(); return
+
+    # OFFICER DASHBOARD (UI UNCHANGED)
+    current_taluk = AppConfig.USER_MAP.get(user, "District")
+    user_folder = os.path.join("user_data", user)
+    if not os.path.exists(user_folder): os.makedirs(user_folder)
+    path_assign = os.path.join(user_folder, "master_assignment") 
+
+    c1, c2 = st.columns([0.75, 0.25])
+    with c1: st.markdown(f"<h3>📊 {current_taluk}</h3>", unsafe_allow_html=True)
+    with c2: 
+        if st.button("Log Out"): st.session_state.clear(); st.rerun()
+    st.markdown("<div style='margin-bottom: 1.5rem; border-bottom: 1px solid #dadce0;'></div>", unsafe_allow_html=True)
+
+    st.markdown(f'<div class="section-header">📂 Master Data Management</div>', unsafe_allow_html=True)
+    col1, _ = st.columns([1, 0.01])
+    with col1:
+        is_saved = os.path.exists(path_assign)
+        if is_saved and not st.session_state.get('update_mode', False):
+            st.markdown("""<div class="status-pill"><span style="margin-right: 8px;">✅</span> Master Assignment File is Active</div>""", unsafe_allow_html=True)
+            st.markdown("<div style='margin-bottom: 0.5rem;'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Update Master File", type="secondary"): st.session_state['update_mode'] = True; st.rerun()
         else:
-            file_hash = get_file_hash(master_uploaded)
-            file_type = master_uploaded.name.split('.')[-1]
-            
-            df = load_dataframe_chunked(
-                master_uploaded.getvalue(),
-                file_hash,
-                file_type
-            )
-            
-            if df is not None:
-                st.success("✅ File loaded")
-                
-                if st.button("💾 Save to Cloud"):
-                    with st.spinner("Syncing..."):
-                        success = SheetsManager.save_master_file(user, df, sheet_url)
-                        if success:
-                            st.success("✅ Saved to Google Sheets")
-                        else:
-                            st.error("❌ Save failed")
+            if is_saved:
+                if st.button("❌ Cancel Update"): st.session_state['update_mode'] = False; st.rerun()
+            st.markdown("Please upload the latest **Master Assignment** file (Excel/CSV).")
+            f1 = st.file_uploader(" ", type=['xlsx','csv'], key="u_master", label_visibility="collapsed")
+            if f1:
+                # ✅ FIXED: Add file validation
+                valid, msg = validate_upload(f1, max_size_mb=10)
+                if not valid:
+                    st.error(f"⚠️ {msg}")
+                elif save_file_robust(f1, path_assign): 
+                    st.session_state['update_mode'] = False
+                    st.toast("Saved!")
+                    st.rerun()
+
+    st.markdown("<div style='margin: 2rem 0; border-bottom: 1px solid #dadce0;'></div>", unsafe_allow_html=True)
+    st.markdown(f'<div class="section-header">🚀 Daily Progress Reports</div>', unsafe_allow_html=True)
     
-    # Daily report
-    st.markdown("---")
-    st.subheader("📈 Daily Progress")
-    
-    report_uploaded = st.file_uploader(
-        "Upload Task Monitoring File",
-        type=['csv'],
-        key="report_upload"
-    )
-    
-    if report_uploaded:
-        valid, msg = validate_upload(report_uploaded, AppConfig.MAX_UPLOAD_SIZE_MB)
-        if not valid:
-            st.error(msg)
-        else:
-            # Manual inputs
-            col1, col2 = st.columns(2)
-            with col1:
-                completed = st.number_input("Completed Villages", 0, 1000, 0)
-            with col2:
-                submitted = st.number_input("Submitted Villages", 0, 1000, 0)
-            
-            if st.button("📊 Generate Report"):
-                with st.spinner("Processing..."):
-                    # Load master from sheets
-                    df_master = SheetsManager.get_master_file(user, sheet_url)
-                    
-                    if df_master is None:
-                        st.error("Please upload master file first")
-                    else:
-                        # Load report file
-                        file_hash = get_file_hash(report_uploaded)
-                        df_report = load_dataframe_chunked(
-                            report_uploaded.getvalue(),
-                            file_hash,
-                            'csv'
-                        )
-                        
-                        if df_report is not None:
-                            # Generate reports (simplified - add your logic)
-                            metrics = {
-                                'taluk': AppConfig.USER_MAP[user],
-                                'completed': completed,
-                                'submitted': submitted,
-                                'timestamp': datetime.now().isoformat()
-                            }
+    # ✅ FIXED: Don't store report_data in session_state
+    if os.path.exists(path_assign):
+        f3 = st.file_uploader("Upload Task Monitoring / GW Completed File (CSV)", type=['csv'], key="task_monitor")
+        if f3:
+            # ✅ FIXED: Validate file
+            valid, msg = validate_upload(f3, max_size_mb=10)
+            if not valid:
+                st.error(f"⚠️ {msg}")
+            else:
+                st.markdown(f"<p style='color: {AppConfig.COLORS['light_red']}; font-weight: bold; font-size: 1rem; margin-bottom: 0.5rem;'>Enter manual counts for Status Card</p>", unsafe_allow_html=True)
+                mc1, mc2 = st.columns(2)
+                with mc1: v_comp = st.number_input("**No. of Completed Villages**", 0)
+                with mc2: v_sub = st.number_input("**Villages Submitted by Enumerators**", 0)
+                st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+
+                if st.button("Generate Reports", type="primary", use_container_width=True):
+                    with st.spinner('Processing data...'):
+                        try:
+                            # ✅ FIXED: Load with file hash for caching
+                            master_content = open(path_assign, 'rb').read()
+                            import hashlib
+                            master_hash = hashlib.md5(master_content).hexdigest()
+                            file_ext = path_assign.split('.')[-1]
                             
-                            # Save metrics
-                            SheetsManager.save_metrics_batch([metrics], sheet_url)
+                            df_assign = smart_load_dataframe(master_content, master_hash, file_ext)
+                            if df_assign is None: 
+                                st.error("Master file corrupted")
+                                st.stop()
                             
-                            # Generate chart
-                            chart_data = {
-                                'names': ['VAO1', 'VAO2', 'VAO3'],
-                                'values': [10, 20, 15]
-                            }
-                            chart_hash = f"{user}_{datetime.now().date()}"
-                            chart_bytes = generate_progress_chart(chart_data, chart_hash)
+                            monitor_content = f3.getvalue()
+                            monitor_hash = hashlib.md5(monitor_content).hexdigest()
+                            df_monitor = smart_load_dataframe(monitor_content, monitor_hash, 'csv')
                             
-                            st.success("✅ Report generated")
-                            st.download_button(
-                                "📥 Download Chart",
-                                chart_bytes,
-                                "progress_chart.png",
-                                "image/png"
-                            )
+                            if df_monitor is None:
+                                st.error("Monitor file corrupted")
+                                st.stop()
                             
-                            # ✅ Clear memory
-                            del df_master
-                            del df_report
+                            # Generate reports
+                            res = generate_all_reports(df_assign, df_monitor, current_taluk, v_comp, v_sub)
+                            
+                            # ✅ FIXED: Don't store in session_state, display immediately
+                            st.success("✅ Reports Generated Successfully")
+                            st.markdown("---")
+                            
+                            # Display and download
+                            c1, c2 = st.columns([0.7, 0.3])
+                            with c1: st.markdown('<p class="section-header">1. Progress Graph</p><p style="font-size:0.9rem; color:#5f6368">Visual overview of VAO progress.</p>', unsafe_allow_html=True)
+                            with c2: st.download_button("📥 Download Graph", res['g'], "Progress_Graph.png", "image/png", use_container_width=True)
+                            st.image(res['g'], use_column_width=True)
+                            
+                            st.markdown("<div style='margin: 1.5rem 0; border-bottom: 1px solid #f1f3f4;'></div>", unsafe_allow_html=True)
+                            c1, c2 = st.columns([0.7, 0.3])
+                            with c1: st.markdown('<p class="section-header">2. Detailed Report (Excel)</p><p style="font-size:0.9rem; color:#5f6368">Complete data for verification.</p>', unsafe_allow_html=True)
+                            with c2: st.download_button("📥 Download Excel", res['x'], "Progress_Report.xlsx", use_container_width=True)
+                            
+                            if res['c']:
+                                st.markdown("<div style='margin: 1.5rem 0; border-bottom: 1px solid #f1f3f4;'></div>", unsafe_allow_html=True)
+                                c1, c2 = st.columns([0.7, 0.3])
+                                with c1: st.markdown('<p class="section-header">3. Taluk Status Card</p><p style="font-size:0.9rem; color:#5f6368">Optimized for sharing.</p>', unsafe_allow_html=True)
+                                with c2: st.download_button("📥 Download Card", res['c'], "Taluk_Summary.png", "image/png", use_container_width=True)
+                                st.image(res['c'], width=600)
+                            
+                            # ✅ FIXED: Clean up immediately
+                            del res
                             gc.collect()
+                            
+                        except Exception as e: 
+                            st.error(f"Error: {str(e)}")
 
 if __name__ == "__main__":
     main()
