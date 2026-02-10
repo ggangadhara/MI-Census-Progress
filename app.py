@@ -16,11 +16,15 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 
+# --- GOOGLE SHEETS LIBRARIES ---
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
 # ==========================================
 # 1. CONFIGURATION & CONSTANTS
 # ==========================================
 class AppConfig:
-    VERSION = "V163_LOCAL_MASTER_ONLY"
+    VERSION = "V164_CLOUD_SYNC_RESTORED"
     GLOBAL_PASSWORD = "mandya"
     SESSION_TIMEOUT_MINUTES = 30
     
@@ -80,7 +84,7 @@ gatherUsageStats = false
     with open(config_path, "w") as f: f.write(config_content.strip())
 
 setup_config()
-st.set_page_config(page_title="MI Census Pro V163", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="MI Census Pro V164", layout="wide", initial_sidebar_state="collapsed")
 
 # ==========================================
 # 3. CORE UTILITIES
@@ -183,6 +187,26 @@ def get_all_taluk_data() -> List[Dict]:
         else:
             all_data.append({"taluk": t_name, "total_villages": 0, "completed_v": 0, "in_progress": 0, "not_started": 0, "gw": 0, "sw": 0, "wb": 0, "submitted_v": 0})
     return all_data
+
+# --- GOOGLE SHEET SYNC ENGINE (RESTORED V164) ---
+def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name: str) -> str:
+    """Connects to G-Sheets and overwrites the data."""
+    try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(json_key_dict, scope)
+        client = gspread.authorize(creds)
+        
+        try:
+            sheet = client.open(sheet_name).sheet1
+        except gspread.SpreadsheetNotFound:
+            return "❌ Sheet not found. Share it with the service account email."
+            
+        data = [df.columns.values.tolist()] + df.astype(str).values.tolist()
+        sheet.clear()
+        sheet.update(data)
+        return f"✅ Successfully synced {len(df)} rows to '{sheet_name}'"
+    except Exception as e:
+        return f"❌ Sync Error: {str(e)}"
 
 # ==========================================
 # 4. REPORT GENERATION ENGINE
@@ -372,6 +396,53 @@ def inject_custom_css():
 # ==========================================
 def render_admin_dashboard():
     st.markdown("## 🏛️ 7th Minor Irrigation Census Progress Report")
+    
+    # --- V164: GOOGLE SHEET SYNC UI ---
+    with st.expander("☁️ Cloud Sync (Save to Google Sheets)", expanded=False):
+        st.markdown("**Instructions:** Upload your Service Account JSON file and enter the Google Sheet name to sync the District Abstract.")
+        c_up, c_in = st.columns([1, 1])
+        with c_up: key_file = st.file_uploader("1. Service Account Key (JSON)", type=['json'])
+        with c_in: sheet_name = st.text_input("2. Sheet Name")
+        
+        if key_file and sheet_name and st.button("🚀 Sync Now", type="primary"):
+            try:
+                json_key = json.load(key_file)
+                # Recalculate Dashboard Data for Sync
+                taluk_data_sync = get_all_taluk_data()
+                prev_date_sync = datetime.now() - timedelta(days=1)
+                prev_data_map_sync = get_history_data(prev_date_sync)
+                
+                rows_sync = []
+                for idx, t in enumerate(taluk_data_sync):
+                    prev_gw = prev_data_map_sync.get(t['taluk'], 0)
+                    rows_sync.append({
+                        "Sl. No": idx + 1, "Taluk": t['taluk'].replace(" Taluk", ""),
+                        "Total Villages": t['total_villages'], "Completed": t['completed_v'],
+                        "In Progress": t['in_progress'], "Not Started": t['not_started'],
+                        "GW Submitted": t['gw'], "SW Submitted": t['sw'], "WB Submitted": t['wb'],
+                        "Villages Submitted": t['submitted_v'],
+                        "Previous GW": prev_gw, "Current GW": t['gw'], "Difference": t['gw'] - prev_gw
+                    })
+                
+                df_sync = pd.DataFrame(rows_sync)
+                # Add Total
+                total_sync = {
+                    "Sl. No": "Total", "Taluk": "",
+                    "Total Villages": df_sync["Total Villages"].sum(), "Completed": df_sync["Completed"].sum(),
+                    "In Progress": df_sync["In Progress"].sum(), "Not Started": df_sync["Not Started"].sum(),
+                    "GW Submitted": df_sync["GW Submitted"].sum(), "SW Submitted": df_sync["SW Submitted"].sum(),
+                    "WB Submitted": df_sync["WB Submitted"].sum(), "Villages Submitted": df_sync["Villages Submitted"].sum(),
+                    "Previous GW": df_sync["Previous GW"].sum(), "Current GW": df_sync["Current GW"].sum(), "Difference": df_sync["Difference"].sum()
+                }
+                df_sync = pd.concat([df_sync, pd.DataFrame([total_sync])], ignore_index=True)
+                
+                with st.spinner("Syncing..."):
+                    st.success(sync_data_to_google_sheet(df_sync, json_key, sheet_name))
+            except Exception as e: st.error(str(e))
+
+    st.markdown("---")
+    
+    # Regular Dashboard
     c1, c2, c3 = st.columns([2, 2, 4])
     with c1: prev_date = st.date_input("Previous Date", value=datetime.now() - timedelta(days=1))
     with c2: curr_date = st.date_input("Current Date", value=datetime.now())
