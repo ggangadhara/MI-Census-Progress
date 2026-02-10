@@ -1,20 +1,16 @@
 """
-MI Census Pro - Streamlit Cloud Edition (Free Tier Optimized)
-Version: V200_FREECLOUD_FIXED
-Author: Enhanced by AI
-Optimized for: Streamlit Cloud Free Tier (zero 403 errors)
+MI Census Pro - Streamlit Cloud Edition
+Version: V200_LIGHTWEIGHT
+NO matplotlib dependency - pure Streamlit
 """
 
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import json
 import os
-import io
-import hashlib
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -22,7 +18,7 @@ warnings.filterwarnings('ignore')
 # CONFIG
 # ========================================
 class AppConfig:
-    VERSION = "V200_FREECLOUD_FIXED"
+    VERSION = "V200_LIGHTWEIGHT"
     PASSWORD = "mandya"
     
     USERS = {
@@ -104,7 +100,6 @@ st.set_page_config(
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
     st.session_state.user = None
-    st.session_state.report_data = None
 
 # ========================================
 # UTILITIES
@@ -114,23 +109,33 @@ def save_taluk_data(taluk: str, data: Dict):
     os.makedirs("central_data", exist_ok=True)
     filepath = f"central_data/{taluk.replace(' ', '_')}.json"
     
-    safe_data = {
-        k: (int(v) if isinstance(v, (np.integer, np.int64)) else
-            float(v) if isinstance(v, (np.floating, np.float64)) else v)
-        for k, v in data.items()
-    }
+    safe_data = {}
+    for k, v in data.items():
+        if isinstance(v, (np.integer, np.int64)):
+            safe_data[k] = int(v)
+        elif isinstance(v, (np.floating, np.float64)):
+            safe_data[k] = float(v)
+        else:
+            safe_data[k] = v
+    
     safe_data['timestamp'] = datetime.now().isoformat()
     
-    with open(filepath, 'w') as f:
-        json.dump(safe_data, f)
+    try:
+        with open(filepath, 'w') as f:
+            json.dump(safe_data, f)
+    except Exception as e:
+        st.warning(f"Could not save data: {e}")
 
 def load_taluk_data(taluk: str) -> Dict:
     """Load taluk metrics"""
     filepath = f"central_data/{taluk.replace(' ', '_')}.json"
     
     if os.path.exists(filepath):
-        with open(filepath, 'r') as f:
-            return json.load(f)
+        try:
+            with open(filepath, 'r') as f:
+                return json.load(f)
+        except:
+            pass
     
     return {
         "taluk": taluk,
@@ -138,17 +143,17 @@ def load_taluk_data(taluk: str) -> Dict:
         "completed": 0,
         "gw": 0,
         "sw": 0,
-        "wb": 0
+        "wb": 0,
+        "submitted": 0
     }
 
 @st.cache_data(ttl=60, max_entries=1)
 def process_report(df_assign, df_monitor, taluk_name, completed, submitted):
-    """Process report data"""
+    """Process report data - no image generation"""
     try:
         df_assign.columns = df_assign.columns.str.strip()
         df_monitor.columns = df_monitor.columns.str.strip()
         
-        # Extract metrics
         total = len(df_monitor)
         
         gw = pd.to_numeric(
@@ -175,18 +180,22 @@ def process_report(df_assign, df_monitor, taluk_name, completed, submitted):
             "wb": int(wb)
         }
         
-        return metrics, df_monitor
+        return metrics, df_monitor.head(10)  # Return sample for display
         
     except Exception as e:
         st.error(f"Error processing data: {str(e)}")
         return None, None
 
-def generate_excel_report(df_data: pd.DataFrame, metrics: Dict, taluk_name: str) -> io.BytesIO:
+def generate_excel_report(df_data: pd.DataFrame, metrics: Dict, taluk_name: str) -> bytes:
     """Generate Excel report"""
     try:
+        import io
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+        
         output = io.BytesIO()
         
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
             # Summary sheet
             summary_data = {
                 'Metric': ['Total Villages', 'GW Schemes', 'SW Schemes', 'Wells', 'Completed', 'Submitted'],
@@ -205,21 +214,21 @@ def generate_excel_report(df_data: pd.DataFrame, metrics: Dict, taluk_name: str)
             # Data sheet
             df_data.to_excel(writer, sheet_name='Data', index=False)
             
-            # Format
-            workbook = writer.book
-            header_format = workbook.add_format({
-                'bold': True,
-                'bg_color': '#D3D3D3',
-                'border': 1,
-                'align': 'center'
-            })
+            # Format summary sheet
+            ws = writer.sheets['Summary']
+            header_fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
+            header_font = Font(bold=True)
             
-            summary_sheet = writer.sheets['Summary']
-            for col_num, value in enumerate(summary_data['Metric']):
-                summary_sheet.write(0, col_num, value, header_format)
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center")
+            
+            ws.column_dimensions['A'].width = 20
+            ws.column_dimensions['B'].width = 15
         
         output.seek(0)
-        return output
+        return output.getvalue()
         
     except Exception as e:
         st.error(f"Excel generation error: {str(e)}")
@@ -275,36 +284,6 @@ def create_status_card_html(taluk_name: str, metrics: Dict) -> str:
     """
     return html
 
-def create_progress_chart(df_data: pd.DataFrame, title: str) -> io.BytesIO:
-    """Create progress chart"""
-    try:
-        fig, ax = plt.subplots(figsize=(10, 6), dpi=70)
-        
-        if len(df_data) > 0:
-            sample = df_data.head(10)
-            values = [1.0] * len(sample)
-            colors = [AppConfig.COLORS['success']] * len(sample)
-            
-            ax.barh(range(len(sample)), values, color=colors)
-            ax.set_yticks(range(len(sample)))
-            ax.set_yticklabels([f"Entry {i+1}" for i in range(len(sample))])
-            ax.set_xlabel('Progress', fontsize=10)
-            ax.set_title(title, fontsize=12, fontweight='bold')
-            ax.set_xlim(0, 1.2)
-        
-        plt.tight_layout()
-        
-        buf = io.BytesIO()
-        fig.savefig(buf, format='png', dpi=70, bbox_inches='tight')
-        buf.seek(0)
-        plt.close(fig)
-        
-        return buf
-        
-    except Exception as e:
-        st.error(f"Chart generation error: {str(e)}")
-        return None
-
 # ========================================
 # MAIN APP
 # ========================================
@@ -349,6 +328,7 @@ def main():
     # Check Authentication
     if not st.session_state.authenticated:
         st.warning("⚠️ Please login to continue")
+        st.info("**Demo Credentials:**\n- User: Any officer\n- Password: mandya")
         return
     
     # Main Content
@@ -362,28 +342,28 @@ def main():
         with col1:
             taluk = st.selectbox("Select Taluk:", AppConfig.TALUKS)
         with col2:
-            st.write("")  # Spacing
+            st.write("")
         
-        assign_file = st.file_uploader("📁 Master File (Assignment):", type=["xlsx", "csv"], key="assign")
-        monitor_file = st.file_uploader("📁 Monitor File (Data):", type=["xlsx", "csv"], key="monitor")
+        assign_file = st.file_uploader("📁 Master File (Assignment):", type=["xlsx", "csv", "xls"], key="assign")
+        monitor_file = st.file_uploader("📁 Monitor File (Data):", type=["xlsx", "csv", "xls"], key="monitor")
         
         col1, col2 = st.columns(2)
         with col1:
-            completed = st.number_input("Completed Villages:", min_value=0, step=1)
+            completed = st.number_input("Completed Villages:", min_value=0, step=1, value=0)
         with col2:
-            submitted = st.number_input("Submitted Villages:", min_value=0, step=1)
+            submitted = st.number_input("Submitted Villages:", min_value=0, step=1, value=0)
         
         if st.button("🚀 Generate Report", key="gen_report"):
             if assign_file and monitor_file:
                 with st.spinner("⏳ Processing..."):
                     try:
                         # Load files
-                        if assign_file.name.endswith('.xlsx'):
+                        if assign_file.name.endswith(('.xlsx', '.xls')):
                             df_assign = pd.read_excel(assign_file)
                         else:
                             df_assign = pd.read_csv(assign_file)
                         
-                        if monitor_file.name.endswith('.xlsx'):
+                        if monitor_file.name.endswith(('.xlsx', '.xls')):
                             df_monitor = pd.read_excel(monitor_file)
                         else:
                             df_monitor = pd.read_csv(monitor_file)
@@ -396,7 +376,7 @@ def main():
                             save_taluk_data(taluk, metrics)
                             
                             # Display results
-                            st.success("✅ Report generated!")
+                            st.success("✅ Report generated successfully!")
                             
                             # Metrics
                             col1, col2, col3, col4 = st.columns(4)
@@ -409,26 +389,33 @@ def main():
                             with col4:
                                 st.metric("Wells", metrics['wb'])
                             
+                            st.write("")
+                            
                             # Status card
                             st.markdown(create_status_card_html(taluk, metrics), unsafe_allow_html=True)
                             
-                            # Chart
-                            chart_buf = create_progress_chart(df_data, f"{taluk} - Data Summary")
-                            if chart_buf:
-                                st.image(chart_buf, use_column_width=True)
+                            st.write("")
+                            
+                            # Data preview
+                            if df_data is not None and len(df_data) > 0:
+                                st.write("#### 📋 Data Preview")
+                                st.dataframe(df_data.head(), use_container_width=True)
+                            
+                            st.write("")
                             
                             # Excel download
-                            excel_buf = generate_excel_report(df_data, metrics, taluk)
-                            if excel_buf:
+                            excel_bytes = generate_excel_report(df_data, metrics, taluk)
+                            if excel_bytes:
                                 st.download_button(
                                     "📥 Download Excel Report",
-                                    excel_buf.getvalue(),
+                                    excel_bytes,
                                     f"{taluk}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                                 )
                     
                     except Exception as e:
                         st.error(f"❌ Error: {str(e)}")
+                        st.info("Make sure both files are in correct Excel or CSV format")
             else:
                 st.warning("⚠️ Please upload both files")
     
@@ -450,11 +437,11 @@ def main():
             with col1:
                 st.metric("Total Taluks", len(df_dashboard))
             with col2:
-                total_villages = df_dashboard['total_villages'].sum()
-                st.metric("Total Villages", int(total_villages))
+                total_villages = int(df_dashboard['total_villages'].sum())
+                st.metric("Total Villages", total_villages)
             with col3:
-                total_completed = df_dashboard['completed'].sum()
-                st.metric("Total Completed", int(total_completed))
+                total_completed = int(df_dashboard['completed'].sum())
+                st.metric("Total Completed", total_completed)
             with col4:
                 if total_villages > 0:
                     pct = (total_completed / total_villages * 100)
@@ -462,14 +449,28 @@ def main():
                 else:
                     st.metric("Overall %", "0%")
             
+            st.write("")
+            
             # Table
             st.write("#### Taluk-wise Summary")
-            display_cols = ['taluk', 'total_villages', 'completed', 'gw', 'sw', 'wb']
+            display_cols = ['taluk', 'total_villages', 'completed', 'gw', 'sw', 'wb', 'submitted']
             st.dataframe(
                 df_dashboard[display_cols],
                 use_container_width=True,
                 hide_index=True
             )
+            
+            st.write("")
+            
+            # Progress bars
+            st.write("#### Completion Progress")
+            for idx, row in df_dashboard.iterrows():
+                if row['total_villages'] > 0:
+                    progress = row['completed'] / row['total_villages']
+                    st.progress(
+                        progress,
+                        text=f"{row['taluk']}: {row['completed']}/{row['total_villages']} ({progress*100:.1f}%)"
+                    )
         else:
             st.info("ℹ️ No data available. Generate reports to see dashboard.")
     
@@ -478,7 +479,9 @@ def main():
         st.write("### ⚙️ Admin Functions")
         
         if st.session_state.user == "Mandya_Admin":
-            col1, col2 = st.columns(2)
+            st.write("#### Administrator Panel")
+            
+            col1, col2, col3 = st.columns(3)
             with col1:
                 if st.button("🔄 Clear Cache"):
                     st.cache_data.clear()
@@ -501,10 +504,27 @@ def main():
                         "text/csv"
                     )
             
+            with col3:
+                if st.button("🗑️ Reset All Data"):
+                    if st.checkbox("Confirm reset all data"):
+                        import shutil
+                        try:
+                            shutil.rmtree("central_data")
+                            st.success("✅ All data reset")
+                        except:
+                            st.info("No data to reset")
+            
+            st.write("")
+            st.divider()
+            st.write("")
+            
             st.info(f"**Version:** {AppConfig.VERSION}")
             st.info(f"**Server Time:** {datetime.now(timezone.utc) + timedelta(hours=5.5)}")
+            st.info(f"**Total Officers:** {len(AppConfig.USERS)}")
+            
         else:
             st.warning("⚠️ Admin access only")
+            st.info(f"Current user: {st.session_state.user}")
 
 if __name__ == "__main__":
     main()
