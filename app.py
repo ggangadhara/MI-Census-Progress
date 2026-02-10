@@ -24,7 +24,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # 1. CONFIGURATION & CONSTANTS
 # ==========================================
 class AppConfig:
-    VERSION = "V164_CLOUD_SYNC_RESTORED"
+    VERSION = "V165_UNRESTRICTED_UPLOAD"
     GLOBAL_PASSWORD = "mandya"
     SESSION_TIMEOUT_MINUTES = 30
     
@@ -84,7 +84,7 @@ gatherUsageStats = false
     with open(config_path, "w") as f: f.write(config_content.strip())
 
 setup_config()
-st.set_page_config(page_title="MI Census Pro V164", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="MI Census Pro V165", layout="wide", initial_sidebar_state="collapsed")
 
 # ==========================================
 # 3. CORE UTILITIES
@@ -188,7 +188,7 @@ def get_all_taluk_data() -> List[Dict]:
             all_data.append({"taluk": t_name, "total_villages": 0, "completed_v": 0, "in_progress": 0, "not_started": 0, "gw": 0, "sw": 0, "wb": 0, "submitted_v": 0})
     return all_data
 
-# --- GOOGLE SHEET SYNC ENGINE (RESTORED V164) ---
+# --- GOOGLE SHEET SYNC ENGINE (V165: UNRESTRICTED) ---
 def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name: str) -> str:
     """Connects to G-Sheets and overwrites the data."""
     try:
@@ -397,12 +397,15 @@ def inject_custom_css():
 def render_admin_dashboard():
     st.markdown("## 🏛️ 7th Minor Irrigation Census Progress Report")
     
-    # --- V164: GOOGLE SHEET SYNC UI ---
+    # --- V165: GOOGLE SHEET SYNC UI (UNRESTRICTED) ---
     with st.expander("☁️ Cloud Sync (Save to Google Sheets)", expanded=False):
         st.markdown("**Instructions:** Upload your Service Account JSON file and enter the Google Sheet name to sync the District Abstract.")
         c_up, c_in = st.columns([1, 1])
-        with c_up: key_file = st.file_uploader("1. Service Account Key (JSON)", type=['json'])
-        with c_in: sheet_name = st.text_input("2. Sheet Name")
+        with c_up: 
+            # REMOVED type=['json'] so you can pick any file
+            key_file = st.file_uploader("1. Service Account Key (JSON)", help="Upload your key file here.")
+        with c_in: 
+            sheet_name = st.text_input("2. Sheet Name")
         
         if key_file and sheet_name and st.button("🚀 Sync Now", type="primary"):
             try:
