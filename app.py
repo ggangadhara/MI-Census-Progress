@@ -652,11 +652,28 @@ def main():
             if not valid:
                 st.error(f"⚠️ {msg}")
             else:
-                st.markdown(f"<p style='color: {AppConfig.COLORS['light_red']}; font-weight: bold; font-size: 1rem; margin-bottom: 0.5rem;'>Enter manual counts for Status Card</p>", unsafe_allow_html=True)
-                mc1, mc2 = st.columns(2)
-                with mc1: v_comp = st.number_input("**No. of Completed Villages**", 0)
-                with mc2: v_sub = st.number_input("**Villages Submitted by Enumerators**", 0)
-                st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+                # ✅ NEW: Detect file type to show/hide manual entry
+                try:
+                    temp_df = pd.read_csv(f3)
+                    is_gw_file = 'enumerator_name' in temp_df.columns
+                    f3.seek(0)  # Reset file pointer
+                    del temp_df
+                except:
+                    is_gw_file = False
+                
+                # Only show manual entry for Task Monitoring files (not GW files)
+                v_comp = 0
+                v_sub = 0
+                
+                if not is_gw_file:
+                    st.markdown(f"<p style='color: {AppConfig.COLORS['light_red']}; font-weight: bold; font-size: 1rem; margin-bottom: 0.5rem;'>Enter manual counts for Status Card</p>", unsafe_allow_html=True)
+                    mc1, mc2 = st.columns(2)
+                    with mc1: v_comp = st.number_input("**No. of Completed Villages**", 0)
+                    with mc2: v_sub = st.number_input("**Villages Submitted by Enumerators**", 0)
+                    st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+                else:
+                    # GW file detected - no manual entry needed
+                    st.info("📊 **Ground Water Completed File detected** - Manual entry not required for this file type.")
 
                 if st.button("Generate Reports", type="primary", use_container_width=True):
                     with st.spinner('Processing data...'):
