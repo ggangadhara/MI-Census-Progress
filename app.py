@@ -24,7 +24,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # 1. CONFIGURATION & CONSTANTS
 # ==========================================
 class AppConfig:
-    VERSION = "V165_UNRESTRICTED_UPLOAD"
+    VERSION = "V168_PRESERVED_DESIGN"
     GLOBAL_PASSWORD = "mandya"
     SESSION_TIMEOUT_MINUTES = 30
     
@@ -84,7 +84,7 @@ gatherUsageStats = false
     with open(config_path, "w") as f: f.write(config_content.strip())
 
 setup_config()
-st.set_page_config(page_title="MI Census Pro V165", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="MI Census Pro V168", layout="wide", initial_sidebar_state="collapsed")
 
 # ==========================================
 # 3. CORE UTILITIES
@@ -134,7 +134,6 @@ def save_taluk_metrics(taluk_name: str, metrics: Dict):
     data_dir = "central_data"
     if not os.path.exists(data_dir): os.makedirs(data_dir)
     
-    # Save Latest JSON
     safe_metrics = {}
     for k, v in metrics.items():
         if isinstance(v, (np.integer, np.int64)): safe_metrics[k] = int(v)
@@ -146,7 +145,6 @@ def save_taluk_metrics(taluk_name: str, metrics: Dict):
     with open(os.path.join(data_dir, f"{taluk_name.replace(' ', '_')}.json"), "w") as f:
         json.dump(safe_metrics, f)
 
-    # Save Local History (CSV)
     history_path = os.path.join(data_dir, "daily_history.csv")
     today_str = datetime.now().strftime('%Y-%m-%d')
     new_row = {
@@ -188,25 +186,18 @@ def get_all_taluk_data() -> List[Dict]:
             all_data.append({"taluk": t_name, "total_villages": 0, "completed_v": 0, "in_progress": 0, "not_started": 0, "gw": 0, "sw": 0, "wb": 0, "submitted_v": 0})
     return all_data
 
-# --- GOOGLE SHEET SYNC ENGINE (V165: UNRESTRICTED) ---
+# --- GOOGLE SHEET SYNC ENGINE ---
 def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name: str) -> str:
-    """Connects to G-Sheets and overwrites the data."""
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_dict(json_key_dict, scope)
         client = gspread.authorize(creds)
-        
-        try:
-            sheet = client.open(sheet_name).sheet1
-        except gspread.SpreadsheetNotFound:
-            return "❌ Sheet not found. Share it with the service account email."
-            
+        try: sheet = client.open(sheet_name).sheet1
+        except gspread.SpreadsheetNotFound: return "❌ Sheet not found."
         data = [df.columns.values.tolist()] + df.astype(str).values.tolist()
-        sheet.clear()
-        sheet.update(data)
+        sheet.clear(); sheet.update(data)
         return f"✅ Successfully synced {len(df)} rows to '{sheet_name}'"
-    except Exception as e:
-        return f"❌ Sync Error: {str(e)}"
+    except Exception as e: return f"❌ Sync Error: {str(e)}"
 
 # ==========================================
 # 4. REPORT GENERATION ENGINE
@@ -215,48 +206,66 @@ def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name:
 def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, taluk_name: str, 
                          manual_completed_v: int, manual_submitted_v: int):
     try:
+        # --- GLOBAL VISUAL SETTINGS (Preserve Design) ---
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.rcParams['font.sans-serif'] = ['Roboto', 'Arial', 'sans-serif']
+
         df_assign.columns = df_assign.columns.str.strip()
         df_monitor.columns = df_monitor.columns.str.strip()
-        num_cols = df_monitor.shape[1]
         
-        col_gw = next((c for c in df_monitor.columns if 'Total schedules GW' in c), None)
-        col_sw = next((c for c in df_monitor.columns if 'Total schedules SW' in c), None)
-        col_wb = next((c for c in df_monitor.columns if 'Total schedules WB' in c), None)
+        # --- DUAL MODE DETECTION ---
+        is_gw_file = 'enumerator_name' in df_monitor.columns
         
-        gw_series = pd.to_numeric(df_monitor[col_gw], errors='coerce').fillna(0) if col_gw else pd.to_numeric(df_monitor.iloc[:, 9], errors='coerce').fillna(0)
-        sw_series = pd.to_numeric(df_monitor[col_sw], errors='coerce').fillna(0) if col_sw else pd.to_numeric(df_monitor.iloc[:, 10], errors='coerce').fillna(0)
-        wb_series = pd.to_numeric(df_monitor[col_wb], errors='coerce').fillna(0) if col_wb else pd.to_numeric(df_monitor.iloc[:, 11], errors='coerce').fillna(0)
-        
-        df_monitor['Total schedules GW'] = gw_series
-        map_val = df_monitor.iloc[:, 4].count() if num_cols > 4 else 0
-        
-        ip_val = 0; ns_val = 0
-        if num_cols > 21:
-            col_v = df_monitor.iloc[:, 21].astype(str).str.lower()
-            ip_val = int(col_v[col_v == 'false'].count())
-            ns_val = int(col_v[col_v == 'true'].count())
+        gw_val = 0; sw_val = 0; wb_val = 0; ip_val = 0; ns_val = 0; mapped_val = 0; total_villages = 0
+        grp_m = None
+
+        if is_gw_file:
+            # MODE 1: GW COMPLETED SCHEMES FILE
+            total_villages = df_monitor['village_name'].nunique() if 'village_name' in df_monitor.columns else 0
+            gw_val = len(df_monitor) 
+            df_monitor['Clean_Key'] = df_monitor['enumerator_name'].apply(clean_name_logic)
+            grp_m = df_monitor.groupby('Clean_Key').size().reset_index(name='Completed')
+        else:
+            # MODE 2: TASK MONITORING FILE (Standard)
+            num_cols = df_monitor.shape[1]
+            col_gw = next((c for c in df_monitor.columns if 'Total schedules GW' in c), None)
+            col_sw = next((c for c in df_monitor.columns if 'Total schedules SW' in c), None)
+            col_wb = next((c for c in df_monitor.columns if 'Total schedules WB' in c), None)
+            
+            gw_series = pd.to_numeric(df_monitor[col_gw], errors='coerce').fillna(0) if col_gw else pd.to_numeric(df_monitor.iloc[:, 9], errors='coerce').fillna(0)
+            sw_series = pd.to_numeric(df_monitor[col_sw], errors='coerce').fillna(0) if col_sw else pd.to_numeric(df_monitor.iloc[:, 10], errors='coerce').fillna(0)
+            wb_series = pd.to_numeric(df_monitor[col_wb], errors='coerce').fillna(0) if col_wb else pd.to_numeric(df_monitor.iloc[:, 11], errors='coerce').fillna(0)
+            
+            df_monitor['Total schedules GW'] = gw_series
+            mapped_val = df_monitor.iloc[:, 4].count() if num_cols > 4 else 0
+            total_villages = len(df_monitor)
+            gw_val = int(gw_series.sum()); sw_val = int(sw_series.sum()); wb_val = int(wb_series.sum())
+            if num_cols > 21:
+                col_v = df_monitor.iloc[:, 21].astype(str).str.lower()
+                ip_val = int(col_v[col_v == 'false'].count())
+                ns_val = int(col_v[col_v == 'true'].count())
+            df_monitor['Clean_Key'] = df_monitor['Enu name'].apply(clean_name_logic)
+            grp_m = df_monitor.groupby('Clean_Key')['Total schedules GW'].sum().reset_index()
+            grp_m.rename(columns={'Total schedules GW': 'Completed'}, inplace=True)
 
         metrics = {
-            "total_villages": len(df_monitor), "mapped": int(map_val),
-            "gw": int(gw_series.sum()), "sw": int(sw_series.sum()), "wb": int(wb_series.sum()),
+            "total_villages": total_villages, "mapped": mapped_val,
+            "gw": gw_val, "sw": sw_val, "wb": wb_val,
             "completed_v": int(manual_completed_v), "submitted_v": int(manual_submitted_v),
             "in_progress": ip_val, "not_started": ns_val
         }
         save_taluk_metrics(taluk_name, metrics)
 
         df_assign['Clean_Key'] = df_assign['User'].apply(clean_name_logic)
-        df_monitor['Clean_Key'] = df_monitor['Enu name'].apply(clean_name_logic)
         key_map = df_assign.groupby('Clean_Key')['User'].first().to_dict()
-
         t_col = next((c for c in df_assign.columns if 'Total schemes' in c), None)
         df_assign[t_col] = pd.to_numeric(df_assign[t_col], errors='coerce').fillna(0)
         grp_a = df_assign.groupby('Clean_Key')[t_col].sum().reset_index()
-        grp_m = df_monitor.groupby('Clean_Key')['Total schedules GW'].sum().reset_index()
 
         del df_assign; del df_monitor; gc.collect()
 
         final = pd.merge(grp_a, grp_m, on='Clean_Key', how='left').fillna(0)
-        final.rename(columns={t_col: 'Assigned', 'Total schedules GW': 'Completed'}, inplace=True)
+        final.rename(columns={t_col: 'Assigned'}, inplace=True) 
         final['VAO Full Name'] = final['Clean_Key'].map(key_map).fillna(final['Clean_Key']).str.title()
         final['% Completed'] = np.where(final['Assigned'] > 0, final['Completed'] / final['Assigned'], np.where(final['Completed'] > 0, 1.0, 0.0))
         final = final.sort_values('Completed', ascending=False).reset_index(drop=True)
@@ -269,7 +278,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         ts = (datetime.now(timezone.utc) + timedelta(hours=5.5)).strftime("%d-%m-%Y %I:%M %p")
         report_title = f"{taluk_name}: VAO wise progress of Ground Water Schemes (tube well) census wrt 6th Minor Irrigation Census upto 2018-19.\n(Generated on: {ts})"
 
-        # EXCEL
+        # EXCEL GENERATION (Design Preserved)
         b_xl = io.BytesIO()
         with pd.ExcelWriter(b_xl, engine='xlsxwriter') as writer:
             out = final[['S. No.', 'VAO Full Name', 'Assigned', 'Completed', '% Completed']].copy()
@@ -296,30 +305,31 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
             ws.set_column(0, 0, 8); ws.set_column(1, 1, 35); ws.set_column(2, 4, 15)
         b_xl.seek(0)
 
-        # CARD
-        plt.rcParams['font.family'] = 'sans-serif'; plt.rcParams['font.sans-serif'] = ['Roboto', 'Arial', 'sans-serif']
-        card_data = [
-            ["Total No. of Villages", metrics['total_villages']], ["No. of Completed Villages", metrics['completed_v']],
-            ["No. of Villages work in progress", metrics['in_progress']], ["No. of Villages work not started", metrics['not_started']],
-            ["Villages mapped to enumerator", metrics['mapped']], ["Ground Water schedules submitted", metrics['gw']],
-            ["Surface Water schedules submitted", metrics['sw']], ["Water Body schedules submitted", metrics['wb']],
-            ["Villages submitted by enumerators", metrics['submitted_v']]
-        ]
-        fh = max(6, len(card_data) * 0.8 + 2.5)
-        fig_c, axc = plt.subplots(figsize=(11.5, fh)); axc.axis('off')
-        tbl = axc.table(cellText=[["  "+textwrap.fill(r[0], 60), str(r[1])] for r in card_data], colLabels=["Description", "Count"], colWidths=[0.8, 0.2], loc='center', bbox=[0, 0, 1, 1])
-        tbl.auto_set_font_size(False)
-        header_color = AppConfig.TALUK_COLORS.get(taluk_name, AppConfig.COLORS['primary'])
-        for (r, c), cell in tbl.get_celld().items():
-            cell.set_edgecolor(AppConfig.COLORS['neutral']); cell.set_linewidth(1)
-            if r == 0: cell.set_facecolor(header_color); cell.set_text_props(weight='bold', color='white', size=13); cell.set_height(0.08)
-            else: cell.set_facecolor('white' if r % 2 == 0 else AppConfig.COLORS['bg_secondary']); cell.set_text_props(size=12, color=AppConfig.COLORS['text']); cell.set_height(0.09)
-            if c == 0: cell.set_text_props(ha='left'); 
-            elif c == 1: cell.set_text_props(ha='center')
-        axc.set_title(f"{taluk_name} Status Report\n(Generated on: {ts})", fontweight='bold', fontsize=16, pad=20, color='black')
-        b_card = io.BytesIO(); plt.savefig(b_card, format='png', dpi=100, bbox_inches='tight', pad_inches=0.1); b_card.seek(0); plt.close(fig_c)
+        # CARD GENERATION (Conditional)
+        b_card = None
+        if not is_gw_file:
+            card_data = [
+                ["Total No. of Villages", metrics['total_villages']], ["No. of Completed Villages", metrics['completed_v']],
+                ["No. of Villages work in progress", metrics['in_progress']], ["No. of Villages work not started", metrics['not_started']],
+                ["Villages mapped to enumerator", metrics['mapped']], ["Ground Water schedules submitted", metrics['gw']],
+                ["Surface Water schedules submitted", metrics['sw']], ["Water Body schedules submitted", metrics['wb']],
+                ["Villages submitted by enumerators", metrics['submitted_v']]
+            ]
+            fh = max(6, len(card_data) * 0.8 + 2.5)
+            fig_c, axc = plt.subplots(figsize=(11.5, fh)); axc.axis('off')
+            tbl = axc.table(cellText=[["  "+textwrap.fill(r[0], 60), str(r[1])] for r in card_data], colLabels=["Description", "Count"], colWidths=[0.8, 0.2], loc='center', bbox=[0, 0, 1, 1])
+            tbl.auto_set_font_size(False)
+            header_color = AppConfig.TALUK_COLORS.get(taluk_name, AppConfig.COLORS['primary'])
+            for (r, c), cell in tbl.get_celld().items():
+                cell.set_edgecolor(AppConfig.COLORS['neutral']); cell.set_linewidth(1)
+                if r == 0: cell.set_facecolor(header_color); cell.set_text_props(weight='bold', color='white', size=13); cell.set_height(0.08)
+                else: cell.set_facecolor('white' if r % 2 == 0 else AppConfig.COLORS['bg_secondary']); cell.set_text_props(size=12, color=AppConfig.COLORS['text']); cell.set_height(0.09)
+                if c == 0: cell.set_text_props(ha='left'); 
+                elif c == 1: cell.set_text_props(ha='center')
+            axc.set_title(f"{taluk_name} Status Report\n(Generated on: {ts})", fontweight='bold', fontsize=16, pad=20, color='black')
+            b_card = io.BytesIO(); plt.savefig(b_card, format='png', dpi=100, bbox_inches='tight', pad_inches=0.1); b_card.seek(0); plt.close(fig_c)
 
-        # GRAPH
+        # GRAPH GENERATION (Design Preserved)
         p = final.sort_values('Completed', ascending=True).reset_index(drop=True)
         fig_g, ax = plt.subplots(figsize=(16, max(10, len(p)*0.6)))
         p['N'] = p['VAO Full Name'].apply(lambda x: f"{x.split()[0]} {x.split()[1][0]}." if len(x.split())>1 else x.split()[0])
@@ -402,7 +412,6 @@ def render_admin_dashboard():
         st.markdown("**Instructions:** Upload your Service Account JSON file and enter the Google Sheet name to sync the District Abstract.")
         c_up, c_in = st.columns([1, 1])
         with c_up: 
-            # REMOVED type=['json'] so you can pick any file
             key_file = st.file_uploader("1. Service Account Key (JSON)", help="Upload your key file here.")
         with c_in: 
             sheet_name = st.text_input("2. Sheet Name")
@@ -428,7 +437,6 @@ def render_admin_dashboard():
                     })
                 
                 df_sync = pd.DataFrame(rows_sync)
-                # Add Total
                 total_sync = {
                     "Sl. No": "Total", "Taluk": "",
                     "Total Villages": df_sync["Total Villages"].sum(), "Completed": df_sync["Completed"].sum(),
@@ -445,7 +453,6 @@ def render_admin_dashboard():
 
     st.markdown("---")
     
-    # Regular Dashboard
     c1, c2, c3 = st.columns([2, 2, 4])
     with c1: prev_date = st.date_input("Previous Date", value=datetime.now() - timedelta(days=1))
     with c2: curr_date = st.date_input("Current Date", value=datetime.now())
@@ -553,7 +560,7 @@ def main():
     def clear_report_cache(): st.session_state['report_data'] = None
 
     if os.path.exists(path_assign):
-        f3 = st.file_uploader("Upload Today's Task Monitoring File (CSV)", type=['csv'], on_change=clear_report_cache)
+        f3 = st.file_uploader("Upload Task Monitoring / GW Completed File (CSV)", type=['csv'], on_change=clear_report_cache)
         if f3:
             st.markdown(f"<p style='color: {AppConfig.COLORS['light_red']}; font-weight: bold; font-size: 1rem; margin-bottom: 0.5rem;'>Enter manual counts for Status Card</p>", unsafe_allow_html=True)
             mc1, mc2 = st.columns(2)
@@ -582,15 +589,19 @@ def main():
         with c1: st.markdown('<p class="section-header">1. Progress Graph</p><p style="font-size:0.9rem; color:#5f6368">Visual overview of VAO progress.</p>', unsafe_allow_html=True)
         with c2: st.download_button("📥 Download Graph", data['g'], "Progress_Graph.png", "image/png", use_container_width=True)
         st.image(data['g'], use_column_width=True)
+        
         st.markdown("<div style='margin: 1.5rem 0; border-bottom: 1px solid #f1f3f4;'></div>", unsafe_allow_html=True)
         c1, c2 = st.columns([0.7, 0.3])
         with c1: st.markdown('<p class="section-header">2. Detailed Report (Excel)</p><p style="font-size:0.9rem; color:#5f6368">Complete data for verification.</p>', unsafe_allow_html=True)
         with c2: st.download_button("📥 Download Excel", data['x'], "Progress_Report.xlsx", use_container_width=True)
-        st.markdown("<div style='margin: 1.5rem 0; border-bottom: 1px solid #f1f3f4;'></div>", unsafe_allow_html=True)
-        c1, c2 = st.columns([0.7, 0.3])
-        with c1: st.markdown('<p class="section-header">3. Taluk Status Card</p><p style="font-size:0.9rem; color:#5f6368">Optimized for sharing.</p>', unsafe_allow_html=True)
-        with c2: st.download_button("📥 Download Card", data['c'], "Taluk_Summary.png", "image/png", use_container_width=True)
-        st.image(data['c'], width=600)
+        
+        # CONDITIONAL CARD RENDERING
+        if data['c']:
+            st.markdown("<div style='margin: 1.5rem 0; border-bottom: 1px solid #f1f3f4;'></div>", unsafe_allow_html=True)
+            c1, c2 = st.columns([0.7, 0.3])
+            with c1: st.markdown('<p class="section-header">3. Taluk Status Card</p><p style="font-size:0.9rem; color:#5f6368">Optimized for sharing.</p>', unsafe_allow_html=True)
+            with c2: st.download_button("📥 Download Card", data['c'], "Taluk_Summary.png", "image/png", use_container_width=True)
+            st.image(data['c'], width=600)
 
 if __name__ == "__main__":
     main()
