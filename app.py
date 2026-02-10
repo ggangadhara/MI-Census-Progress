@@ -2,6 +2,8 @@ import streamlit as st
 import os
 import pandas as pd
 import numpy as np
+import matplotlib
+matplotlib.use('Agg') # MEMORY CRITICAL: No GUI backend
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.patches import Patch
@@ -24,7 +26,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # 1. CONFIGURATION & CONSTANTS
 # ==========================================
 class AppConfig:
-    VERSION = "V168_PRESERVED_DESIGN"
+    VERSION = "V170_MAX_MEMORY_EFFICIENCY"
     GLOBAL_PASSWORD = "mandya"
     SESSION_TIMEOUT_MINUTES = 30
     
@@ -84,7 +86,7 @@ gatherUsageStats = false
     with open(config_path, "w") as f: f.write(config_content.strip())
 
 setup_config()
-st.set_page_config(page_title="MI Census Pro V168", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="MI Census Pro V170", layout="wide", initial_sidebar_state="collapsed")
 
 # ==========================================
 # 3. CORE UTILITIES
@@ -95,7 +97,7 @@ def get_base64_image(image_path: str) -> Optional[str]:
     with open(image_path, "rb") as img_file:
         return base64.b64encode(img_file.read()).decode()
 
-@st.cache_data(show_spinner=False, ttl=600)
+@st.cache_data(show_spinner=False, ttl=600, max_entries=1) # MEMORY FIX: Only keep 1 file in RAM
 def smart_load_dataframe(path: str, last_modified_time: float) -> Optional[pd.DataFrame]:
     if not os.path.exists(path): return None
     try: return pd.read_excel(path)
@@ -134,6 +136,7 @@ def save_taluk_metrics(taluk_name: str, metrics: Dict):
     data_dir = "central_data"
     if not os.path.exists(data_dir): os.makedirs(data_dir)
     
+    # Save Latest JSON
     safe_metrics = {}
     for k, v in metrics.items():
         if isinstance(v, (np.integer, np.int64)): safe_metrics[k] = int(v)
@@ -145,6 +148,7 @@ def save_taluk_metrics(taluk_name: str, metrics: Dict):
     with open(os.path.join(data_dir, f"{taluk_name.replace(' ', '_')}.json"), "w") as f:
         json.dump(safe_metrics, f)
 
+    # Save Local History (CSV)
     history_path = os.path.join(data_dir, "daily_history.csv")
     today_str = datetime.now().strftime('%Y-%m-%d')
     new_row = {
@@ -200,13 +204,17 @@ def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name:
     except Exception as e: return f"❌ Sync Error: {str(e)}"
 
 # ==========================================
-# 4. REPORT GENERATION ENGINE
+# 4. REPORT GENERATION ENGINE (V170: EXPERT MEMORY)
 # ==========================================
-@st.cache_data(show_spinner=False, ttl=300)
+@st.cache_data(show_spinner=False, ttl=60, max_entries=1) # MEMORY CRITICAL: Max 1 report in RAM
 def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, taluk_name: str, 
                          manual_completed_v: int, manual_submitted_v: int):
     try:
-        # --- GLOBAL VISUAL SETTINGS (Preserve Design) ---
+        # --- PRE-EMPTIVE CLEANUP ---
+        plt.close('all') # Clear any stale plots
+        gc.collect()
+
+        # --- GLOBAL VISUAL SETTINGS ---
         plt.rcParams['font.family'] = 'sans-serif'
         plt.rcParams['font.sans-serif'] = ['Roboto', 'Arial', 'sans-serif']
 
@@ -223,20 +231,25 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
             # MODE 1: GW COMPLETED SCHEMES FILE
             total_villages = df_monitor['village_name'].nunique() if 'village_name' in df_monitor.columns else 0
             gw_val = len(df_monitor) 
-            df_monitor['Clean_Key'] = df_monitor['enumerator_name'].apply(clean_name_logic)
-            grp_m = df_monitor.groupby('Clean_Key').size().reset_index(name='Completed')
+            
+            # MEMORY FIX: Vectorized clean & Group
+            temp_df = pd.DataFrame()
+            temp_df['Clean_Key'] = df_monitor['enumerator_name'].astype(str).apply(clean_name_logic)
+            grp_m = temp_df.groupby('Clean_Key').size().reset_index(name='Completed')
+            del temp_df
+            
         else:
-            # MODE 2: TASK MONITORING FILE (Standard)
+            # MODE 2: TASK MONITORING FILE
             num_cols = df_monitor.shape[1]
             col_gw = next((c for c in df_monitor.columns if 'Total schedules GW' in c), None)
             col_sw = next((c for c in df_monitor.columns if 'Total schedules SW' in c), None)
             col_wb = next((c for c in df_monitor.columns if 'Total schedules WB' in c), None)
             
-            gw_series = pd.to_numeric(df_monitor[col_gw], errors='coerce').fillna(0) if col_gw else pd.to_numeric(df_monitor.iloc[:, 9], errors='coerce').fillna(0)
-            sw_series = pd.to_numeric(df_monitor[col_sw], errors='coerce').fillna(0) if col_sw else pd.to_numeric(df_monitor.iloc[:, 10], errors='coerce').fillna(0)
-            wb_series = pd.to_numeric(df_monitor[col_wb], errors='coerce').fillna(0) if col_wb else pd.to_numeric(df_monitor.iloc[:, 11], errors='coerce').fillna(0)
+            # MEMORY FIX: Downcast numeric types immediately
+            gw_series = pd.to_numeric(df_monitor[col_gw], errors='coerce').fillna(0).astype(int) if col_gw else pd.to_numeric(df_monitor.iloc[:, 9], errors='coerce').fillna(0).astype(int)
+            sw_series = pd.to_numeric(df_monitor[col_sw], errors='coerce').fillna(0).astype(int) if col_sw else pd.to_numeric(df_monitor.iloc[:, 10], errors='coerce').fillna(0).astype(int)
+            wb_series = pd.to_numeric(df_monitor[col_wb], errors='coerce').fillna(0).astype(int) if col_wb else pd.to_numeric(df_monitor.iloc[:, 11], errors='coerce').fillna(0).astype(int)
             
-            df_monitor['Total schedules GW'] = gw_series
             mapped_val = df_monitor.iloc[:, 4].count() if num_cols > 4 else 0
             total_villages = len(df_monitor)
             gw_val = int(gw_series.sum()); sw_val = int(sw_series.sum()); wb_val = int(wb_series.sum())
@@ -244,9 +257,14 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                 col_v = df_monitor.iloc[:, 21].astype(str).str.lower()
                 ip_val = int(col_v[col_v == 'false'].count())
                 ns_val = int(col_v[col_v == 'true'].count())
-            df_monitor['Clean_Key'] = df_monitor['Enu name'].apply(clean_name_logic)
-            grp_m = df_monitor.groupby('Clean_Key')['Total schedules GW'].sum().reset_index()
+            
+            # MEMORY FIX: Slim grouping
+            temp_df = pd.DataFrame()
+            temp_df['Total schedules GW'] = gw_series
+            temp_df['Clean_Key'] = df_monitor['Enu name'].astype(str).apply(clean_name_logic)
+            grp_m = temp_df.groupby('Clean_Key')['Total schedules GW'].sum().reset_index()
             grp_m.rename(columns={'Total schedules GW': 'Completed'}, inplace=True)
+            del temp_df
 
         metrics = {
             "total_villages": total_villages, "mapped": mapped_val,
@@ -256,13 +274,19 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         }
         save_taluk_metrics(taluk_name, metrics)
 
-        df_assign['Clean_Key'] = df_assign['User'].apply(clean_name_logic)
-        key_map = df_assign.groupby('Clean_Key')['User'].first().to_dict()
+        # Assignment Processing (Slimmed)
         t_col = next((c for c in df_assign.columns if 'Total schemes' in c), None)
-        df_assign[t_col] = pd.to_numeric(df_assign[t_col], errors='coerce').fillna(0)
-        grp_a = df_assign.groupby('Clean_Key')[t_col].sum().reset_index()
+        
+        # MEMORY FIX: Process assignment only on necessary columns
+        assign_slim = df_assign[['User', t_col]].copy()
+        assign_slim['Clean_Key'] = assign_slim['User'].apply(clean_name_logic)
+        assign_slim[t_col] = pd.to_numeric(assign_slim[t_col], errors='coerce').fillna(0)
+        
+        key_map = assign_slim.groupby('Clean_Key')['User'].first().to_dict()
+        grp_a = assign_slim.groupby('Clean_Key')[t_col].sum().reset_index()
 
-        del df_assign; del df_monitor; gc.collect()
+        # SUPER CLEANUP: Drop source files from RAM before merge
+        del df_assign; del df_monitor; del assign_slim; gc.collect()
 
         final = pd.merge(grp_a, grp_m, on='Clean_Key', how='left').fillna(0)
         final.rename(columns={t_col: 'Assigned'}, inplace=True) 
@@ -278,7 +302,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         ts = (datetime.now(timezone.utc) + timedelta(hours=5.5)).strftime("%d-%m-%Y %I:%M %p")
         report_title = f"{taluk_name}: VAO wise progress of Ground Water Schemes (tube well) census wrt 6th Minor Irrigation Census upto 2018-19.\n(Generated on: {ts})"
 
-        # EXCEL GENERATION (Design Preserved)
+        # EXCEL GENERATION
         b_xl = io.BytesIO()
         with pd.ExcelWriter(b_xl, engine='xlsxwriter') as writer:
             out = final[['S. No.', 'VAO Full Name', 'Assigned', 'Completed', '% Completed']].copy()
@@ -356,7 +380,9 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         ax.legend(handles=leg, loc='lower right', fontsize=11, framealpha=0.9)
         b_grph = io.BytesIO(); plt.tight_layout(); plt.savefig(b_grph, format='png', dpi=100); b_grph.seek(0); plt.close(fig_g)
         
+        # FINAL CLEANUP
         del final; del p; del out; gc.collect()
+        plt.close('all') # Double check
         return {'x': b_xl, 'c': b_card, 'g': b_grph}
     except Exception as e: raise RuntimeError(str(e))
 
@@ -407,7 +433,7 @@ def inject_custom_css():
 def render_admin_dashboard():
     st.markdown("## 🏛️ 7th Minor Irrigation Census Progress Report")
     
-    # --- V165: GOOGLE SHEET SYNC UI (UNRESTRICTED) ---
+    # --- V170: GOOGLE SHEET SYNC UI ---
     with st.expander("☁️ Cloud Sync (Save to Google Sheets)", expanded=False):
         st.markdown("**Instructions:** Upload your Service Account JSON file and enter the Google Sheet name to sync the District Abstract.")
         c_up, c_in = st.columns([1, 1])
@@ -419,7 +445,6 @@ def render_admin_dashboard():
         if key_file and sheet_name and st.button("🚀 Sync Now", type="primary"):
             try:
                 json_key = json.load(key_file)
-                # Recalculate Dashboard Data for Sync
                 taluk_data_sync = get_all_taluk_data()
                 prev_date_sync = datetime.now() - timedelta(days=1)
                 prev_data_map_sync = get_history_data(prev_date_sync)
@@ -595,7 +620,6 @@ def main():
         with c1: st.markdown('<p class="section-header">2. Detailed Report (Excel)</p><p style="font-size:0.9rem; color:#5f6368">Complete data for verification.</p>', unsafe_allow_html=True)
         with c2: st.download_button("📥 Download Excel", data['x'], "Progress_Report.xlsx", use_container_width=True)
         
-        # CONDITIONAL CARD RENDERING
         if data['c']:
             st.markdown("<div style='margin: 1.5rem 0; border-bottom: 1px solid #f1f3f4;'></div>", unsafe_allow_html=True)
             c1, c2 = st.columns([0.7, 0.3])
