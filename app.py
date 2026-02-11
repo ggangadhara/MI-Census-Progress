@@ -354,10 +354,13 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
             mapped_val = df_monitor.iloc[:, 4].count() if num_cols > 4 else 0
             total_villages = len(df_monitor)
             gw_val = int(gw_series.sum()); sw_val = int(sw_series.sum()); wb_val = int(wb_series.sum())
+            
+            # Calculate not_started from column 21 (or 22)
             if num_cols > 21:
                 col_v = df_monitor.iloc[:, 21].astype(str).str.lower()
-                ip_val = int(col_v[col_v == 'false'].count())
                 ns_val = int(col_v[col_v == 'true'].count())
+            else:
+                ns_val = 0
             
             # ✅ NEW: Auto-calculate completed and submitted from column I
             col_status = next((c for c in df_monitor.columns if 'Present status of village schedule' in c), None)
@@ -371,6 +374,9 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                 # Fallback if column not found
                 manual_completed_v = 0
                 manual_submitted_v = 0
+            
+            # ✅ NEW: Calculate in_progress as: total_villages - (completed + not_started)
+            ip_val = total_villages - (manual_completed_v + ns_val)
             
             temp_df = pd.DataFrame()
             temp_df['Total schedules GW'] = gw_series
