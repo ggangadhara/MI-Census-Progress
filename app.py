@@ -3,7 +3,7 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use('Agg') # MEMORY CRITICAL: No GUI backend
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.patches import Patch
@@ -19,23 +19,22 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 
-# --- GOOGLE SHEETS LIBRARIES (✅ FIXED: Updated library) ---
+# --- GOOGLE SHEETS LIBRARIES ---
 import gspread
 try:
-    from google.oauth2.service_account import Credentials  # ✅ NEW: Modern library
+    from google.oauth2.service_account import Credentials
     USE_NEW_AUTH = True
 except ImportError:
-    from oauth2client.service_account import ServiceAccountCredentials  # Fallback
+    from oauth2client.service_account import ServiceAccountCredentials
     USE_NEW_AUTH = False
 
 # ==========================================
-# 1. CONFIGURATION & CONSTANTS (UNCHANGED)
+# 1. CONFIGURATION & CONSTANTS
 # ==========================================
 class AppConfig:
-    VERSION = "V171_MEMORY_OPTIMIZED"
-    SESSION_TIMEOUT_MINUTES = 30
+    VERSION = "V172_SEAMLESS_SHEETS"
+    SESSION_TIMEOUT_MINUTES = 180  # 3 hours - enough time for uploads
     
-    # Authorized Personnel (UNCHANGED)
     USER_MAP = {
         "Chethan_NGM": "Nagamangala Taluk",
         "Gangadhar_MLV": "Malavalli Taluk",
@@ -64,16 +63,14 @@ class AppConfig:
         "Pandavapura Taluk": "#9334e6"
     }
 
-# ✅ NEW: Secure password management
 def get_password() -> str:
-    """Get password from secrets or environment"""
     try:
         return st.secrets["app"]["password"]
     except:
-        return os.environ.get("APP_PASSWORD", "mandya")  # Fallback
+        return os.environ.get("APP_PASSWORD", "mandya")
 
 # ==========================================
-# 2. SYSTEM BOOTSTRAP (UNCHANGED)
+# 2. SYSTEM BOOTSTRAP
 # ==========================================
 def setup_config():
     config_dir = ".streamlit"
@@ -99,7 +96,7 @@ gatherUsageStats = false
     with open(config_path, "w") as f: f.write(config_content.strip())
 
 setup_config()
-st.set_page_config(page_title="MI Census Pro V171", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="MI Census Pro V172", layout="wide", initial_sidebar_state="collapsed")
 
 # ==========================================
 # 3. CORE UTILITIES
@@ -110,13 +107,10 @@ def get_base64_image(image_path: str) -> Optional[str]:
     with open(image_path, "rb") as img_file:
         return base64.b64encode(img_file.read()).decode()
 
-# ✅ FIXED: Per-user caching with file hash
-@st.cache_data(show_spinner=False, ttl=600, max_entries=15)  # Increased from 1 to 15
+@st.cache_data(show_spinner=False, ttl=600, max_entries=15)
 def smart_load_dataframe(file_content: bytes, file_hash: str) -> Optional[pd.DataFrame]:
-    """Load dataframe from bytes with hash-based caching"""
     try:
         file_obj = io.BytesIO(file_content)
-        # Try Excel first
         try:
             return pd.read_excel(file_obj)
         except:
@@ -138,16 +132,12 @@ def clean_name_logic(name: Any) -> str:
     name = re.sub(r'[^A-Z\s]', '', name)
     return " ".join(name.strip().split())
 
-# ✅ NEW: File validation
 def validate_upload(uploaded_file, max_size_mb: int = 10) -> tuple:
-    """Validate file uploads"""
     if uploaded_file is None:
         return False, "No file uploaded"
-    
     file_size_mb = len(uploaded_file.getvalue()) / (1024 * 1024)
     if file_size_mb > max_size_mb:
         return False, f"File too large: {file_size_mb:.1f}MB (max: {max_size_mb}MB)"
-    
     return True, "Valid"
 
 def save_file_robust(uploaded_file, target_path: str) -> bool:
@@ -157,7 +147,6 @@ def save_file_robust(uploaded_file, target_path: str) -> bool:
         return True
     except: return False
 
-# --- SESSION & DATA (UNCHANGED) ---
 def check_session_timeout():
     if 'last_active' not in st.session_state:
         st.session_state['last_active'] = time.time()
@@ -172,7 +161,6 @@ def save_taluk_metrics(taluk_name: str, metrics: Dict):
     data_dir = "central_data"
     if not os.path.exists(data_dir): os.makedirs(data_dir)
     
-    # Save Latest JSON
     safe_metrics = {}
     for k, v in metrics.items():
         if isinstance(v, (np.integer, np.int64)): safe_metrics[k] = int(v)
@@ -184,7 +172,6 @@ def save_taluk_metrics(taluk_name: str, metrics: Dict):
     with open(os.path.join(data_dir, f"{taluk_name.replace(' ', '_')}.json"), "w") as f:
         json.dump(safe_metrics, f)
 
-    # Save Local History (CSV)
     history_path = os.path.join(data_dir, "daily_history.csv")
     today_str = datetime.now().strftime('%Y-%m-%d')
     new_row = {
@@ -226,16 +213,84 @@ def get_all_taluk_data() -> List[Dict]:
             all_data.append({"taluk": t_name, "total_villages": 0, "completed_v": 0, "in_progress": 0, "not_started": 0, "gw": 0, "sw": 0, "wb": 0, "submitted_v": 0})
     return all_data
 
-# --- GOOGLE SHEET SYNC ENGINE (✅ FIXED: Updated with batch operations) ---
-def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name: str) -> str:
+# ==========================================
+# 4. GOOGLE SHEETS FUNCTIONS
+# ==========================================
+def get_sheets_client():
+    """Get authorized Google Sheets client"""
     try:
         if USE_NEW_AUTH:
-            # Use modern google-auth library
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            scopes = ['https://www.googleapis.com/auth/spreadsheets', 
+                      'https://www.googleapis.com/auth/drive']
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+            return gspread.authorize(creds)
+        else:
+            scope = ['https://spreadsheets.google.com/feeds', 
+                     'https://www.googleapis.com/auth/drive']
+            creds_dict = dict(st.secrets["gcp_service_account"])
+            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+            return gspread.authorize(creds)
+    except Exception as e:
+        st.error(f"Failed to connect to Google Sheets: {e}")
+        return None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def load_master_from_sheets(user: str, sheet_url: str) -> Optional[pd.DataFrame]:
+    """Load master assignment data from Google Sheets"""
+    try:
+        client = get_sheets_client()
+        if not client:
+            return None
+        
+        spreadsheet = client.open_by_url(sheet_url)
+        worksheet = spreadsheet.worksheet(f"{user}_master")
+        
+        data = worksheet.get_all_values()
+        if not data:
+            return None
+        
+        df = pd.DataFrame(data[1:], columns=data[0])
+        return df
+        
+    except gspread.WorksheetNotFound:
+        return None
+    except Exception as e:
+        st.error(f"Failed to load master data: {e}")
+        return None
+
+def save_master_to_sheets(user: str, df: pd.DataFrame, sheet_url: str) -> bool:
+    """Save master assignment data to Google Sheets"""
+    try:
+        client = get_sheets_client()
+        if not client:
+            return False
+        
+        spreadsheet = client.open_by_url(sheet_url)
+        
+        try:
+            worksheet = spreadsheet.worksheet(f"{user}_master")
+        except gspread.WorksheetNotFound:
+            worksheet = spreadsheet.add_worksheet(f"{user}_master", rows=1000, cols=20)
+        
+        worksheet.clear()
+        data = [df.columns.values.tolist()] + df.values.tolist()
+        worksheet.update(data, value_input_option='USER_ENTERED')
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"Failed to save master data: {e}")
+        return False
+
+def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name: str) -> str:
+    """Sync district data to Google Sheets"""
+    try:
+        if USE_NEW_AUTH:
             scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
             creds = Credentials.from_service_account_info(json_key_dict, scopes=scopes)
             client = gspread.authorize(creds)
         else:
-            # Fallback to old library
             scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
             creds = ServiceAccountCredentials.from_json_keyfile_dict(json_key_dict, scope)
             client = gspread.authorize(creds)
@@ -245,7 +300,6 @@ def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name:
         except gspread.SpreadsheetNotFound: 
             return "❌ Sheet not found."
         
-        # ✅ FIXED: Batch update instead of row-by-row
         data = [df.columns.values.tolist()] + df.astype(str).values.tolist()
         sheet.clear()
         sheet.update(data, value_input_option='USER_ENTERED')
@@ -255,48 +309,44 @@ def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name:
         return f"❌ Sync Error: {str(e)}"
 
 # ==========================================
-# 4. REPORT GENERATION ENGINE (MEMORY OPTIMIZED, DESIGN PRESERVED)
+# 5. REPORT GENERATION ENGINE
 # ==========================================
-@st.cache_data(show_spinner=False, ttl=60, max_entries=10)  # ✅ Increased from 1 to 10
-def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, taluk_name: str, 
-                         manual_completed_v: int, manual_submitted_v: int):
+@st.cache_data(show_spinner=False, ttl=60, max_entries=10)
+def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, taluk_name: str):
     try:
-        # --- PRE-EMPTIVE CLEANUP ---
-        plt.close('all') # Clear any stale plots
+        plt.close('all')
         gc.collect()
 
-        # --- GLOBAL VISUAL SETTINGS (UNCHANGED) ---
         plt.rcParams['font.family'] = 'sans-serif'
         plt.rcParams['font.sans-serif'] = ['Roboto', 'Arial', 'sans-serif']
 
         df_assign.columns = df_assign.columns.str.strip()
         df_monitor.columns = df_monitor.columns.str.strip()
         
-        # --- DUAL MODE DETECTION (UNCHANGED) ---
         is_gw_file = 'enumerator_name' in df_monitor.columns
         
         gw_val = 0; sw_val = 0; wb_val = 0; ip_val = 0; ns_val = 0; mapped_val = 0; total_villages = 0
         grp_m = None
+        
+        # ✅ NEW: Auto-calculate completed and submitted villages from column I
+        manual_completed_v = 0
+        manual_submitted_v = 0
 
         if is_gw_file:
-            # MODE 1: GW COMPLETED SCHEMES FILE
             total_villages = df_monitor['village_name'].nunique() if 'village_name' in df_monitor.columns else 0
             gw_val = len(df_monitor) 
             
-            # MEMORY FIX: Vectorized clean & Group
             temp_df = pd.DataFrame()
             temp_df['Clean_Key'] = df_monitor['enumerator_name'].astype(str).apply(clean_name_logic)
             grp_m = temp_df.groupby('Clean_Key').size().reset_index(name='Completed')
             del temp_df
             
         else:
-            # MODE 2: TASK MONITORING FILE
             num_cols = df_monitor.shape[1]
             col_gw = next((c for c in df_monitor.columns if 'Total schedules GW' in c), None)
             col_sw = next((c for c in df_monitor.columns if 'Total schedules SW' in c), None)
             col_wb = next((c for c in df_monitor.columns if 'Total schedules WB' in c), None)
             
-            # MEMORY FIX: Downcast numeric types immediately
             gw_series = pd.to_numeric(df_monitor[col_gw], errors='coerce').fillna(0).astype(int) if col_gw else pd.to_numeric(df_monitor.iloc[:, 9], errors='coerce').fillna(0).astype(int)
             sw_series = pd.to_numeric(df_monitor[col_sw], errors='coerce').fillna(0).astype(int) if col_sw else pd.to_numeric(df_monitor.iloc[:, 10], errors='coerce').fillna(0).astype(int)
             wb_series = pd.to_numeric(df_monitor[col_wb], errors='coerce').fillna(0).astype(int) if col_wb else pd.to_numeric(df_monitor.iloc[:, 11], errors='coerce').fillna(0).astype(int)
@@ -309,7 +359,19 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                 ip_val = int(col_v[col_v == 'false'].count())
                 ns_val = int(col_v[col_v == 'true'].count())
             
-            # MEMORY FIX: Slim grouping
+            # ✅ NEW: Auto-calculate completed and submitted from column I
+            col_status = next((c for c in df_monitor.columns if 'Present status of village schedule' in c), None)
+            if col_status:
+                status_series = df_monitor[col_status].astype(str).str.strip().str.upper()
+                # Completed villages = SUBMITTED_BY_BLO count
+                manual_completed_v = int((status_series == 'SUBMITTED_BY_BLO').sum())
+                # Submitted by enumerator = SUBMITTED_BY_BLO + AT_BLO_LEVEL
+                manual_submitted_v = int(((status_series == 'SUBMITTED_BY_BLO') | (status_series == 'AT_BLO_LEVEL')).sum())
+            else:
+                # Fallback if column not found
+                manual_completed_v = 0
+                manual_submitted_v = 0
+            
             temp_df = pd.DataFrame()
             temp_df['Total schedules GW'] = gw_series
             temp_df['Clean_Key'] = df_monitor['Enu name'].astype(str).apply(clean_name_logic)
@@ -325,10 +387,8 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         }
         save_taluk_metrics(taluk_name, metrics)
 
-        # Assignment Processing (Slimmed)
         t_col = next((c for c in df_assign.columns if 'Total schemes' in c), None)
         
-        # MEMORY FIX: Process assignment only on necessary columns
         assign_slim = df_assign[['User', t_col]].copy()
         assign_slim['Clean_Key'] = assign_slim['User'].apply(clean_name_logic)
         assign_slim[t_col] = pd.to_numeric(assign_slim[t_col], errors='coerce').fillna(0)
@@ -336,7 +396,6 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         key_map = assign_slim.groupby('Clean_Key')['User'].first().to_dict()
         grp_a = assign_slim.groupby('Clean_Key')[t_col].sum().reset_index()
 
-        # SUPER CLEANUP: Drop source files from RAM before merge
         del df_assign; del df_monitor; del assign_slim; gc.collect()
 
         final = pd.merge(grp_a, grp_m, on='Clean_Key', how='left').fillna(0)
@@ -353,7 +412,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         ts = (datetime.now(timezone.utc) + timedelta(hours=5.5)).strftime("%d-%m-%Y %I:%M %p")
         report_title = f"{taluk_name}: VAO wise progress of Ground Water Schemes (tube well) census wrt 6th Minor Irrigation Census upto 2018-19.\n(Generated on: {ts})"
 
-        # EXCEL GENERATION (UNCHANGED)
+        # EXCEL GENERATION
         b_xl = io.BytesIO()
         with pd.ExcelWriter(b_xl, engine='xlsxwriter') as writer:
             out = final[['S. No.', 'VAO Full Name', 'Assigned', 'Completed', '% Completed']].copy()
@@ -380,7 +439,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
             ws.set_column(0, 0, 8); ws.set_column(1, 1, 35); ws.set_column(2, 4, 15)
         b_xl.seek(0)
 
-        # CARD GENERATION (UNCHANGED, Conditional)
+        # CARD GENERATION
         b_card = None
         if not is_gw_file:
             card_data = [
@@ -404,7 +463,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
             axc.set_title(f"{taluk_name} Status Report\n(Generated on: {ts})", fontweight='bold', fontsize=16, pad=20, color='black')
             b_card = io.BytesIO(); plt.savefig(b_card, format='png', dpi=100, bbox_inches='tight', pad_inches=0.1); b_card.seek(0); plt.close(fig_c)
 
-        # GRAPH GENERATION (Design Preserved, UNCHANGED)
+        # GRAPH GENERATION
         p = final.sort_values('Completed', ascending=True).reset_index(drop=True)
         fig_g, ax = plt.subplots(figsize=(16, max(10, len(p)*0.6)))
         p['N'] = p['VAO Full Name'].apply(lambda x: f"{x.split()[0]} {x.split()[1][0]}." if len(x.split())>1 else x.split()[0])
@@ -431,14 +490,14 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         ax.legend(handles=leg, loc='lower right', fontsize=11, framealpha=0.9)
         b_grph = io.BytesIO(); plt.tight_layout(); plt.savefig(b_grph, format='png', dpi=100); b_grph.seek(0); plt.close(fig_g)
         
-        # FINAL CLEANUP (✅ ENHANCED)
         del final; del p; del out; gc.collect()
-        plt.close('all') # Double check
+        plt.close('all')
         return {'x': b_xl, 'c': b_card, 'g': b_grph}
-    except Exception as e: raise RuntimeError(str(e))
+    except Exception as e: 
+        raise RuntimeError(str(e))
 
 # ==========================================
-# 5. UI COMPONENTS (UNCHANGED - Footer Preserved)
+# 6. UI COMPONENTS
 # ==========================================
 def inject_custom_css():
     st.markdown(f"""
@@ -479,12 +538,11 @@ def inject_custom_css():
     """, unsafe_allow_html=True)
 
 # ==========================================
-# 6. ADMIN DASHBOARD (UNCHANGED)
+# 7. ADMIN DASHBOARD
 # ==========================================
 def render_admin_dashboard():
     st.markdown("## 🏛️ 7th Minor Irrigation Census Progress Report")
     
-    # --- Google Sheet Sync UI (UNCHANGED) ---
     with st.expander("☁️ Cloud Sync (Save to Google Sheets)", expanded=False):
         st.markdown("**Instructions:** Upload your Service Account JSON file and enter the Google Sheet name to sync the District Abstract.")
         c_up, c_in = st.columns([1, 1])
@@ -572,7 +630,7 @@ def render_admin_dashboard():
     st.download_button("📥 Download CSV", df.to_csv(index=False).encode('utf-8'), "Mandya_Abstract.csv", "text/csv")
 
 # ==========================================
-# 7. MAIN APP (UI UNCHANGED, Memory Optimized)
+# 8. MAIN APP
 # ==========================================
 def main():
     inject_custom_css()
@@ -588,12 +646,14 @@ def main():
             if img_base64: st.markdown(f'<div style="display:flex;justify-content:center;margin-bottom:1rem;"><img src="data:image/png;base64,{img_base64}" width="160" style="border-radius:12px;"></div>', unsafe_allow_html=True)
             st.markdown("<h2 style='text-align:center;'>7th Minor Irrigation Census</h2><p style='text-align:center;color:#5f6368;'>Secure Progress Monitoring System</p>", unsafe_allow_html=True)
             with st.form("login_form"):
-                user = st.selectbox("Select Office", ["Select..."] + AppConfig.AUTHORIZED_USERS)
+                user = st.selectbox("Select Officer", ["Select..."] + AppConfig.AUTHORIZED_USERS)
                 pwd = st.text_input("Password", type="password")
                 if st.form_submit_button("Secure Login", type="primary", use_container_width=True):
-                    # ✅ FIXED: Use get_password() instead of hardcoded
                     if user != "Select..." and pwd == get_password():
-                        st.session_state['logged_in'] = True; st.session_state['user'] = user; st.session_state['last_active'] = time.time(); st.rerun()
+                        st.session_state['logged_in'] = True
+                        st.session_state['user'] = user
+                        st.session_state['last_active'] = time.time()
+                        st.rerun()
                     else: st.error("⛔ Incorrect Password")
         st.markdown("<div style='height: 50vh;'></div>", unsafe_allow_html=True)
         return
@@ -602,12 +662,11 @@ def main():
     if user == "Mandya_Admin":
         st.markdown(f"<div style='display:flex;justify-content:space-between;align-items:center;'><h3>👤 Administrator</h3></div>", unsafe_allow_html=True)
         if st.button("Log Out"): st.session_state.clear(); st.rerun()
-        st.markdown("---"); render_admin_dashboard(); return
+        st.markdown("---")
+        render_admin_dashboard()
+        return
 
     current_taluk = AppConfig.USER_MAP.get(user, "District")
-    user_folder = os.path.join("user_data", user)
-    if not os.path.exists(user_folder): os.makedirs(user_folder)
-    path_assign = os.path.join(user_folder, "master_assignment") 
 
     c1, c2 = st.columns([0.75, 0.25])
     with c1: st.markdown(f"<h3>📊 {current_taluk}</h3>", unsafe_allow_html=True)
@@ -615,89 +674,194 @@ def main():
         if st.button("Log Out"): st.session_state.clear(); st.rerun()
     st.markdown("<div style='margin-bottom: 1.5rem; border-bottom: 1px solid #dadce0;'></div>", unsafe_allow_html=True)
 
+    # ==========================================
+    # MASTER DATA MANAGEMENT - GOOGLE SHEETS
+    # ==========================================
     st.markdown(f'<div class="section-header">📂 Master Data Management</div>', unsafe_allow_html=True)
+    
+    # Check if Google Sheets is configured
+    try:
+        sheet_url = st.secrets["sheets"]["master_sheet_url"]
+        use_google_sheets = True
+    except:
+        sheet_url = None
+        use_google_sheets = False
+    
     col1, _ = st.columns([1, 0.01])
     with col1:
-        is_saved = os.path.exists(path_assign)
-        if is_saved and not st.session_state.get('update_mode', False):
-            st.markdown("""<div class="status-pill"><span style="margin-right: 8px;">✅</span> Master Assignment File is Active</div>""", unsafe_allow_html=True)
-            st.markdown("<div style='margin-bottom: 0.5rem;'></div>", unsafe_allow_html=True)
-            if st.button("🔄 Update Master File", type="secondary"): st.session_state['update_mode'] = True; st.rerun()
-        else:
-            if is_saved:
-                if st.button("❌ Cancel Update"): st.session_state['update_mode'] = False; st.rerun()
-            st.markdown("Please upload the latest **Master Assignment** file (Excel/CSV).")
-            f1 = st.file_uploader(" ", type=['xlsx','csv'], key="u_master", label_visibility="collapsed")
-            if f1:
-                # ✅ NEW: Add validation
-                valid, msg = validate_upload(f1, max_size_mb=10)
-                if not valid:
-                    st.error(f"⚠️ {msg}")
-                elif save_file_robust(f1, path_assign): 
-                    st.session_state['update_mode'] = False
-                    st.toast("Saved!")
+        if use_google_sheets:
+            # GOOGLE SHEETS MODE
+            st.markdown("""
+            <div class="status-pill">
+                <span style="margin-right: 8px;">☁️</span> 
+                Master data synced with Google Sheets
+            </div>
+            """, unsafe_allow_html=True)
+            
+            df_master = load_master_from_sheets(user, sheet_url)
+            
+            if df_master is not None:
+                st.success(f"✅ Loaded {len(df_master)} rows from Google Sheets")
+                
+                if st.button("🔄 Refresh from Google Sheets", type="secondary"):
+                    st.cache_data.clear()
                     st.rerun()
+                
+                with st.expander("📤 Upload New Master File to Google Sheets"):
+                    st.markdown("Upload a new master file to update Google Sheets")
+                    f_upload = st.file_uploader("Upload Excel/CSV", type=['xlsx','csv'], key="u_master")
+                    if f_upload:
+                        valid, msg = validate_upload(f_upload, max_size_mb=10)
+                        if not valid:
+                            st.error(f"⚠️ {msg}")
+                        else:
+                            file_hash = hashlib.md5(f_upload.getvalue()).hexdigest()
+                            df_new = smart_load_dataframe(f_upload.getvalue(), file_hash)
+                            if df_new is not None:
+                                if st.button("💾 Save to Google Sheets"):
+                                    with st.spinner("Uploading to Google Sheets..."):
+                                        if save_master_to_sheets(user, df_new, sheet_url):
+                                            st.success("✅ Master data updated in Google Sheets!")
+                                            st.cache_data.clear()
+                                            time.sleep(1)
+                                            st.rerun()
+            else:
+                st.warning("⚠️ No master data found in Google Sheets")
+                st.markdown("Please upload your master assignment file to initialize:")
+                
+                f1 = st.file_uploader("Upload Master Assignment File", type=['xlsx','csv'], key="u_master_init")
+                if f1:
+                    valid, msg = validate_upload(f1, max_size_mb=10)
+                    if not valid:
+                        st.error(f"⚠️ {msg}")
+                    else:
+                        file_hash = hashlib.md5(f1.getvalue()).hexdigest()
+                        df_init = smart_load_dataframe(f1.getvalue(), file_hash)
+                        if df_init is not None:
+                            if st.button("💾 Initialize Google Sheets"):
+                                with st.spinner("Uploading to Google Sheets..."):
+                                    if save_master_to_sheets(user, df_init, sheet_url):
+                                        st.success("✅ Master data initialized!")
+                                        st.cache_data.clear()
+                                        time.sleep(1)
+                                        st.rerun()
+        else:
+            # LOCAL FILE MODE (FALLBACK)
+            st.info("💡 Configure Google Sheets URL in secrets for seamless sync")
+            
+            user_folder = os.path.join("user_data", user)
+            if not os.path.exists(user_folder): os.makedirs(user_folder)
+            path_assign = os.path.join(user_folder, "master_assignment")
+            
+            is_saved = os.path.exists(path_assign)
+            if is_saved and not st.session_state.get('update_mode', False):
+                st.markdown("""<div class="status-pill"><span style="margin-right: 8px;">✅</span> Master Assignment File is Active</div>""", unsafe_allow_html=True)
+                st.markdown("<div style='margin-bottom: 0.5rem;'></div>", unsafe_allow_html=True)
+                if st.button("🔄 Update Master File", type="secondary"): 
+                    st.session_state['update_mode'] = True
+                    st.rerun()
+            else:
+                if is_saved:
+                    if st.button("❌ Cancel Update"): 
+                        st.session_state['update_mode'] = False
+                        st.rerun()
+                st.markdown("Please upload the latest **Master Assignment** file (Excel/CSV).")
+                f1 = st.file_uploader(" ", type=['xlsx','csv'], key="u_master_local", label_visibility="collapsed")
+                if f1:
+                    valid, msg = validate_upload(f1, max_size_mb=10)
+                    if not valid:
+                        st.error(f"⚠️ {msg}")
+                    elif save_file_robust(f1, path_assign): 
+                        st.session_state['update_mode'] = False
+                        st.toast("Saved!")
+                        st.rerun()
 
+    # ==========================================
+    # DAILY PROGRESS REPORTS
+    # ==========================================
     st.markdown("<div style='margin: 2rem 0; border-bottom: 1px solid #dadce0;'></div>", unsafe_allow_html=True)
     st.markdown(f'<div class="section-header">🚀 Daily Progress Reports</div>', unsafe_allow_html=True)
     
-    if 'report_data' not in st.session_state: st.session_state['report_data'] = None
-    def clear_report_cache(): st.session_state['report_data'] = None
+    if 'report_data' not in st.session_state: 
+        st.session_state['report_data'] = None
+    
+    def clear_report_cache(): 
+        st.session_state['report_data'] = None
 
-    if os.path.exists(path_assign):
-        f3 = st.file_uploader("Upload Task Monitoring / GW Completed File (CSV)", type=['csv'], on_change=clear_report_cache)
+    # Check if master data is available
+    master_available = False
+    df_assign = None
+    
+    if use_google_sheets:
+        df_assign = load_master_from_sheets(user, sheet_url)
+        master_available = (df_assign is not None)
+    else:
+        user_folder = os.path.join("user_data", user)
+        path_assign = os.path.join(user_folder, "master_assignment")
+        master_available = os.path.exists(path_assign)
+    
+    if master_available:
+        f3 = st.file_uploader("Upload Task Monitoring / GW Completed File (CSV)", 
+                             type=['csv'], on_change=clear_report_cache)
         if f3:
-            # ✅ NEW: Validate CSV upload
             valid, msg = validate_upload(f3, max_size_mb=10)
             if not valid:
                 st.error(f"⚠️ {msg}")
             else:
-                # ✅ NEW: Detect file type to show/hide manual entry
+                # Detect file type
                 try:
                     temp_df = pd.read_csv(f3)
                     is_gw_file = 'enumerator_name' in temp_df.columns
-                    f3.seek(0)  # Reset file pointer
+                    f3.seek(0)
                     del temp_df
                 except:
                     is_gw_file = False
                 
-                # Only show manual entry for Task Monitoring files (not GW files)
-                v_comp = 0
-                v_sub = 0
-                
-                if not is_gw_file:
-                    st.markdown(f"<p style='color: {AppConfig.COLORS['light_red']}; font-weight: bold; font-size: 1rem; margin-bottom: 0.5rem;'>Enter manual counts for Status Card</p>", unsafe_allow_html=True)
-                    mc1, mc2 = st.columns(2)
-                    with mc1: v_comp = st.number_input("**No. of Completed Villages**", 0)
-                    with mc2: v_sub = st.number_input("**Villages Submitted by Enumerators**", 0)
-                    st.markdown("<div style='margin-bottom: 1rem;'></div>", unsafe_allow_html=True)
+                # ✅ UPDATED: No manual entry needed - auto-calculated from column I
+                if is_gw_file:
+                    st.info("📊 **Ground Water Completed File detected** - Status card will not be generated for this file type.")
                 else:
-                    # GW file detected - no manual entry needed
-                    st.info("📊 **Ground Water Completed File detected** - Manual entry not required for this file type.")
+                    st.info("📊 **Task Monitoring File detected** - Village counts will be auto-calculated from 'Present status of village schedule' column.")
 
                 if st.button("Generate Reports", type="primary", use_container_width=True):
                     with st.spinner('Processing data...'):
                         try:
-                            # ✅ FIXED: Load with file hash for per-user caching
-                            master_content = open(path_assign, 'rb').read()
-                            master_hash = hashlib.md5(master_content).hexdigest()
+                            # Load master data
+                            if use_google_sheets:
+                                if df_assign is None:
+                                    df_assign = load_master_from_sheets(user, sheet_url)
+                                if df_assign is None:
+                                    st.error("Failed to load master data from Google Sheets")
+                                    st.stop()
+                            else:
+                                master_content = open(path_assign, 'rb').read()
+                                master_hash = hashlib.md5(master_content).hexdigest()
+                                df_assign = smart_load_dataframe(master_content, master_hash)
+                                if df_assign is None:
+                                    st.error("Master file corrupted")
+                                    st.stop()
                             
-                            df_assign = smart_load_dataframe(master_content, master_hash)
-                            if df_assign is None: st.error("Master file corrupted"); st.stop()
-                            
+                            # Load monitoring file
                             monitor_content = f3.getvalue()
                             monitor_hash = hashlib.md5(monitor_content).hexdigest()
                             df_monitor = smart_load_dataframe(monitor_content, monitor_hash)
                             
-                            if df_monitor is None: st.error("Monitor file corrupted"); st.stop()
+                            if df_monitor is None:
+                                st.error("Monitor file corrupted")
+                                st.stop()
                             
-                            res = generate_all_reports(df_assign, df_monitor, current_taluk, v_comp, v_sub)
+                            # ✅ UPDATED: No manual values needed - auto-calculated inside function
+                            res = generate_all_reports(df_assign, df_monitor, current_taluk)
                             st.session_state['report_data'] = res
                             
-                            # ✅ FIXED: Immediate cleanup
                             del df_assign; del df_monitor; gc.collect()
-                        except Exception as e: st.error(f"Error: {str(e)}")
+                            
+                        except Exception as e: 
+                            st.error(f"Error: {str(e)}")
+    else:
+        st.warning("⚠️ Please upload master assignment file first")
 
+    # Display reports
     if st.session_state.get('report_data'):
         data = st.session_state['report_data']
         st.success("✅ Reports Generated Successfully")
