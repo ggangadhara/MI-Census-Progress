@@ -588,7 +588,7 @@ def main():
             if img_base64: st.markdown(f'<div style="display:flex;justify-content:center;margin-bottom:1rem;"><img src="data:image/png;base64,{img_base64}" width="160" style="border-radius:12px;"></div>', unsafe_allow_html=True)
             st.markdown("<h2 style='text-align:center;'>7th Minor Irrigation Census</h2><p style='text-align:center;color:#5f6368;'>Secure Progress Monitoring System</p>", unsafe_allow_html=True)
             with st.form("login_form"):
-                user = st.selectbox("Select Officer", ["Select..."] + AppConfig.AUTHORIZED_USERS)
+                user = st.selectbox("Select Office", ["Select..."] + AppConfig.AUTHORIZED_USERS)
                 pwd = st.text_input("Password", type="password")
                 if st.form_submit_button("Secure Login", type="primary", use_container_width=True):
                     # ✅ FIXED: Use get_password() instead of hardcoded
