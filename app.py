@@ -275,14 +275,15 @@ def save_master_to_sheets(user: str, df: pd.DataFrame, sheet_url: str) -> bool:
         
         worksheet.clear()
         
-        # --- FIX STARTS HERE ---
-        # Replace NaN/Inf values with empty strings to make it JSON compliant
-        df_clean = df.fillna("")
-        # If you have specific infinite values, you might also need:
-        # df_clean = df_clean.replace([np.inf, -np.inf], "")
+        # --- FIX: Sanitize Data for JSON Compliance ---
+        # Replace NaN (empty values) and Infinity with empty strings
+        df_clean = df.copy()
+        df_clean = df_clean.fillna("")
+        df_clean = df_clean.replace([np.inf, -np.inf], "")
         
+        # Convert to list for Google Sheets
         data = [df_clean.columns.values.tolist()] + df_clean.values.tolist()
-        # --- FIX ENDS HERE ---
+        # ---------------------------------------------
 
         worksheet.update(data, value_input_option='USER_ENTERED')
         
@@ -291,6 +292,7 @@ def save_master_to_sheets(user: str, df: pd.DataFrame, sheet_url: str) -> bool:
     except Exception as e:
         st.error(f"Failed to save master data: {e}")
         return False
+
 
 
 def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name: str) -> str:
