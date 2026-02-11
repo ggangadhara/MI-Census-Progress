@@ -274,7 +274,16 @@ def save_master_to_sheets(user: str, df: pd.DataFrame, sheet_url: str) -> bool:
             worksheet = spreadsheet.add_worksheet(f"{user}_master", rows=1000, cols=20)
         
         worksheet.clear()
-        data = [df.columns.values.tolist()] + df.values.tolist()
+        
+        # --- FIX STARTS HERE ---
+        # Replace NaN/Inf values with empty strings to make it JSON compliant
+        df_clean = df.fillna("")
+        # If you have specific infinite values, you might also need:
+        # df_clean = df_clean.replace([np.inf, -np.inf], "")
+        
+        data = [df_clean.columns.values.tolist()] + df_clean.values.tolist()
+        # --- FIX ENDS HERE ---
+
         worksheet.update(data, value_input_option='USER_ENTERED')
         
         return True
@@ -282,6 +291,7 @@ def save_master_to_sheets(user: str, df: pd.DataFrame, sheet_url: str) -> bool:
     except Exception as e:
         st.error(f"Failed to save master data: {e}")
         return False
+
 
 def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name: str) -> str:
     """Sync district data to Google Sheets"""
