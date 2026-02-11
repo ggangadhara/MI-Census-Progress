@@ -302,7 +302,6 @@ def sync_data_to_google_sheet(df: pd.DataFrame, json_key_dict: Dict, sheet_name:
         
         data = [df.columns.values.tolist()] + df.astype(str).values.tolist()
         sheet.clear()
-df = df.fillna("").replace([np.inf, -np.inf], "")
         sheet.update(data, value_input_option='USER_ENTERED')
         
         return f"✅ Successfully synced {len(df)} rows to '{sheet_name}'"
