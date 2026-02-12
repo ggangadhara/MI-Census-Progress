@@ -516,7 +516,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                             Patch(facecolor=AppConfig.COLORS["success"],label="Completed > 10%"),
                             Patch(facecolor=AppConfig.COLORS["danger"],label="Completed ≤ 10%")],
                   loc="lower right",fontsize=11,framealpha=0.9)
-        b_g=io.BytesIO(); plt.tight_layout(); plt.savefig(b_g,format="png",dpi=80,optimize=True)
+        b_g=io.BytesIO(); plt.tight_layout(); plt.savefig(b_g,format="png",dpi=80)
         b_g.seek(0); plt.close(fig_g)  # close immediately
 
         del p; gc.collect(); plt.close("all")
