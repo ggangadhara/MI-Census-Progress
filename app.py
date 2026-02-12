@@ -808,8 +808,13 @@ def main():
                     with st.spinner("Processing…"):
                         try:
                             if use_gs:
-                                da=dfa or load_master_from_sheets(user,sheet_url)
-                                if da is None: st.error("Master data unavailable."); st.stop()
+                                       if dfa is not None and not dfa.empty:
+                                          da = dfa
+                                       else:
+                                           da = load_master_from_sheets(user, sheet_url)
+                                       if da is None or da.empty:
+                                          st.error("Master data unavailable.")
+                                          st.stop()
                             else:
                                 raw=open(pal,"rb").read()
                                 da=smart_load_dataframe(raw,hashlib.md5(raw).hexdigest()); del raw; gc.collect()
