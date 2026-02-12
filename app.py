@@ -807,26 +807,14 @@ def main():
                     st.session_state["report_data"]=None; gc.collect()
                     with st.spinner("Processing…"):
                         try:
-     if use_gs:
-                            # SAFE DataFrame handling (no ambiguous truth evaluation)
-                            if dfa is not None and not dfa.empty:
-                                da = dfa
+                            if use_gs:
+                                da=dfa or load_master_from_sheets(user,sheet_url)
+                                if da is None: st.error("Master data unavailable."); st.stop()
                             else:
-                                da = load_master_from_sheets(user, sheet_url)
-
-                            if da is None or da.empty:
-                                st.error("Master data unavailable.")
-                                st.stop()
-                        else:
-                            raw = open(pal, "rb").read()
-                            da = smart_load_dataframe(raw, hashlib.md5(raw).hexdigest())
-                            del raw
-                            gc.collect()
-
-                            if da is None or da.empty:
-                                st.error("Master file unreadable.")
-                                st.stop()
-                                mb = f3.getvalue()
+                                raw=open(pal,"rb").read()
+                                da=smart_load_dataframe(raw,hashlib.md5(raw).hexdigest()); del raw; gc.collect()
+                                if da is None: st.error("Master file unreadable."); st.stop()
+                            mb=f3.getvalue()
                             dm2=smart_load_dataframe(mb,hashlib.md5(mb).hexdigest()); del mb; gc.collect()
                             if dm2 is None: st.error("Monitoring file unreadable."); st.stop()
                             res=generate_all_reports(da,dm2,taluk)
