@@ -802,7 +802,7 @@ def main():
             ok,msg=validate_upload(f3)
             if not ok: st.error(f"⚠️ {msg}")
             else:
-                st.info("📊 Task Monitoring File — counts auto-calculated from column I.")
+                st.info("📊 Uploaded Task Monitoring File - So Village counts auto-calculated.")
                 if st.button("⚡ Generate Reports",type="primary",use_container_width=True):
                     st.session_state["report_data"]=None; gc.collect()
                     with st.spinner("Processing…"):
