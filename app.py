@@ -807,7 +807,7 @@ def main():
                     st.session_state["report_data"]=None; gc.collect()
                     with st.spinner("Processing…"):
                         try:
-                            if use_gs:
+                         if use_gs:
     # SAFE DataFrame handling (no ambiguous truth evaluation)
     if dfa is not None and not dfa.empty:
         da = dfa
@@ -816,6 +816,14 @@ def main():
 
     if da is None or da.empty:
         st.error("Master data unavailable.")
+        st.stop()
+else:
+    raw = open(pal, "rb").read()
+    da = smart_load_dataframe(raw, hashlib.md5(raw).hexdigest())
+    del raw
+    gc.collect()
+    if da is None or da.empty:
+        st.error("Master file unreadable.")
         st.stop()
                             else:
                                 raw=open(pal,"rb").read()
