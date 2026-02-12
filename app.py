@@ -483,7 +483,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
             if c==0: cell.set_text_props(ha="left")
             elif c==1: cell.set_text_props(ha="center")
         axc.set_title(f"{taluk} Status Report\n(Generated on: {ts})",fontweight="bold",fontsize=16,pad=20,color="black")
-        b_card=io.BytesIO(); plt.savefig(b_card,format="png",dpi=90,bbox_inches="tight",pad_inches=0.1)
+        b_card=io.BytesIO(); plt.savefig(b_card,format="png",dpi=80,bbox_inches="tight",pad_inches=0.1)
         b_card.seek(0); plt.close(fig_c)   # close immediately
 
         # ── Bar Chart ────────────────────────────────────────────────
@@ -516,7 +516,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                             Patch(facecolor=AppConfig.COLORS["success"],label="Completed > 10%"),
                             Patch(facecolor=AppConfig.COLORS["danger"],label="Completed ≤ 10%")],
                   loc="lower right",fontsize=11,framealpha=0.9)
-        b_g=io.BytesIO(); plt.tight_layout(); plt.savefig(b_g,format="png",dpi=80)
+        b_g=io.BytesIO(); plt.tight_layout(); plt.savefig(b_g,format="png",dpi=100)
         b_g.seek(0); plt.close(fig_g)  # close immediately
 
         del p; gc.collect(); plt.close("all")
