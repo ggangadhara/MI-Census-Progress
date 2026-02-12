@@ -644,19 +644,58 @@ def render_admin():
 
     st.markdown("---")
     st.markdown("#### 📊 Today's Report Status")
-    sc=st.columns(len(_TALUK_ORDER))
-    for i,tn in enumerate(_TALUK_ORDER):
-        fp=os.path.join(_DATA_DIR,f"{tn.replace(' ','_')}.json")
-        with sc[i]:
-            color,label="#EA4335","❌ No Data"
-            if os.path.exists(fp):
-                try:
-                    with open(fp) as f: jd=json.load(f)
-                    dt=datetime.fromisoformat(jd.get("timestamp","")).astimezone(timezone(timedelta(hours=5.5)))
-                    same=dt.strftime("%Y-%m-%d")==today_s
-                    color="#34A853" if same else "#FBBC04"
-                    label="✅ Today" if same else f"🕒 {dt.strftime('%d %b')}"
-                except Exception as e: logger.warning("Status card %s: %s",tn,e); color="#DADCE0"; label="⚠️"
+sc = st.columns(len(_TALUK_ORDER))
+
+for i, tn in enumerate(_TALUK_ORDER):
+    fp = os.path.join(_DATA_DIR, f"{tn.replace(' ','_')}.json")
+
+    with sc[i]:
+        color = "#EA4335"
+        label = "❌ No Data"
+
+        if os.path.exists(fp):
+            try:
+                with open(fp) as f:
+                    jd = json.load(f)
+
+                # Parse timestamp safely
+                ts_raw = jd.get("timestamp", "")
+                if ts_raw:
+                    dt = datetime.fromisoformat(ts_raw)
+                    dt = dt.astimezone(timezone(timedelta(hours=5.5)))
+
+                    date_str = dt.strftime("%d %b")
+                    time_str = dt.strftime("%I:%M %p")
+                    same_day = dt.strftime("%Y-%m-%d") == today_s
+
+                    if same_day:
+                        color = "#34A853"
+                        label = f"✅ Today<br><span style='font-size:0.7rem'>{time_str}</span>"
+                    else:
+                        color = "#FBBC04"
+                        label = f"🕒 {date_str}<br><span style='font-size:0.7rem'>{time_str}</span>"
+
+            except Exception as e:
+                logger.warning("Status card %s: %s", tn, e)
+                color = "#DADCE0"
+                label = "⚠️ Error"
+
+        short = tn.replace(" Taluk", "")
+
+        st.markdown(
+            f"""
+            <div style='text-align:center;
+                        padding:10px 6px;
+                        border-radius:10px;
+                        background:{color}20;
+                        border:1px solid {color};
+                        min-height:75px;'>
+                <b style='font-size:.8rem;color:{color}'>{short}</b><br>
+                <span style='font-size:.75rem;color:#5f6368'>{label}</span>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
             short=tn.replace(" Taluk","")
             st.markdown(f"<div style='text-align:center;padding:8px 4px;border-radius:8px;background:{color}20;border:1px solid {color};'><b style='font-size:.75rem;color:{color}'>{short}</b><br><span style='font-size:.7rem;color:#5f6368'>{label}</span></div>",unsafe_allow_html=True)
 
