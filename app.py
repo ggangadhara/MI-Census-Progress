@@ -516,7 +516,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                             Patch(facecolor=AppConfig.COLORS["success"],label="Completed > 10%"),
                             Patch(facecolor=AppConfig.COLORS["danger"],label="Completed ≤ 10%")],
                   loc="lower right",fontsize=11,framealpha=0.9)
-        b_g=io.BytesIO(); plt.tight_layout(); plt.savefig(b_g,format="png",dpi=100)
+        b_g=io.BytesIO(); plt.tight_layout(); plt.savefig(b_g,format="png",dpi=80)
         b_g.seek(0); plt.close(fig_g)  # close immediately
 
         del p; gc.collect(); plt.close("all")
@@ -598,6 +598,60 @@ def render_admin():
     try:    sheet_url=st.secrets["sheets"]["master_sheet_url"]; use_gs=True
     except (KeyError, FileNotFoundError, Exception): sheet_url=None; use_gs=False
 
+    # ── MASTER DATA MANAGEMENT (Admin only) ───────────────────────────
+    with st.expander("📂 Manage Master Assignment Files (All Taluks)", expanded=False):
+        if not use_gs:
+            st.warning("⚠️ Google Sheets not configured. Add [sheets] master_sheet_url to Streamlit Secrets.")
+        else:
+            st.info("👆 Only District Admin can upload or update master assignment files. "
+                    "Individual taluk officers have read-only access.")
+
+            # Taluk selector — map display name → username key
+            _admin_taluk_map = {v: k for k, v in AppConfig.USER_MAP.items() if k != "Mandya_Admin"}
+            sel_taluk = st.selectbox(
+                "Select Taluk to manage",
+                options=sorted(_admin_taluk_map.keys()),
+                key="admin_taluk_sel",
+            )
+            sel_user = _admin_taluk_map[sel_taluk]
+
+            # Show current status for selected taluk
+            cur = load_master_from_sheets(sel_user, sheet_url)
+            if cur is not None:
+                st.success(f"✅ {sel_taluk}: {len(cur)} rows currently in Google Sheets")
+                action = "update"
+            else:
+                st.warning(f"⚠️ {sel_taluk}: No master data found in Google Sheets")
+                action = "initialize"
+
+            fa=st.file_uploader(
+                f"Upload Master Assignment file for {sel_taluk} (Excel/CSV)",
+                type=["xlsx","csv"], key=f"admin_master_{sel_user}",
+            )
+            if fa:
+                ok, msg = validate_upload(fa)
+                if not ok:
+                    st.error(f"⚠️ {msg}")
+                else:
+                    btn_label = "💾 Update in Google Sheets" if action == "update" else "💾 Initialize Google Sheets"
+                    if action == "update":
+                        st.warning(f"⚠️ This will REPLACE existing master data for {sel_taluk}.")
+                    if st.button(btn_label, type="primary", key="admin_master_save"):
+                        with st.spinner(f"Uploading master file for {sel_taluk}…"):
+                            dfa2 = smart_load_dataframe(fa.getvalue(), hashlib.md5(fa.getvalue()).hexdigest())
+                            if dfa2 is None:
+                                st.error("❌ Cannot read the uploaded file.")
+                            elif save_master_to_sheets(sel_user, dfa2, sheet_url):
+                                st.success(f"✅ Master data for {sel_taluk} saved to Google Sheets ({len(dfa2)} rows)!")
+                                st.cache_data.clear()
+                            else:
+                                st.error("❌ Failed to save. Check Google Sheet sharing settings.")
+
+            if cur is not None:
+                with st.expander(f"👁️ Preview current master data — {sel_taluk}", expanded=False):
+                    st.dataframe(cur.head(20), use_container_width=True, hide_index=True)
+                    st.caption(f"Showing first 20 of {len(cur)} rows")
+
     st.markdown("---")
     c1,c2,_=st.columns([2,2,4])
     with c1: prev=st.date_input("Previous Date",value=now.date()-timedelta(days=1))
@@ -648,7 +702,7 @@ def render_admin():
     for i,tn in enumerate(_TALUK_ORDER):
         fp=os.path.join(_DATA_DIR,f"{tn.replace(' ','_')}.json")
         with sc[i]:
-            color,label="#EA4335","❌ No Data"
+            color,label,time_str="#EA4335","❌ No Data",""
             if os.path.exists(fp):
                 try:
                     with open(fp) as f: jd=json.load(f)
@@ -656,9 +710,19 @@ def render_admin():
                     same=dt.strftime("%Y-%m-%d")==today_s
                     color="#34A853" if same else "#FBBC04"
                     label="✅ Today" if same else f"🕒 {dt.strftime('%d %b')}"
-                except Exception as e: logger.warning("Status card %s: %s",tn,e); color="#DADCE0"; label="⚠️"
+                    time_str=dt.strftime("%I:%M %p")   # e.g. "03:45 PM" IST
+                except Exception as e: logger.warning("Status card %s: %s",tn,e); color="#DADCE0"; label="⚠️"; time_str=""
             short=tn.replace(" Taluk","")
-            st.markdown(f"<div style='text-align:center;padding:8px 4px;border-radius:8px;background:{color}20;border:1px solid {color};'><b style='font-size:.75rem;color:{color}'>{short}</b><br><span style='font-size:.7rem;color:#5f6368'>{label}</span></div>",unsafe_allow_html=True)
+            time_html=(f"<br><span style='font-size:.65rem;color:#5f6368;font-weight:500'>{time_str}</span>"
+                       if time_str else "")
+            st.markdown(
+                f"<div style='text-align:center;padding:8px 4px;border-radius:8px;"
+                f"background:{color}20;border:1px solid {color};'>"
+                f"<b style='font-size:.75rem;color:{color}'>{short}</b><br>"
+                f"<span style='font-size:.7rem;color:#5f6368'>{label}</span>"
+                f"{time_html}</div>",
+                unsafe_allow_html=True,
+            )
 
 # ──────────────────────────────────────────────────────────────────────
 # 11. MAIN
@@ -721,48 +785,13 @@ def main():
             dm=load_master_from_sheets(user,sheet_url)
             if dm is not None:
                 st.success(f"✅ Loaded {len(dm)} rows from Google Sheets")
-                b1,b2,_=st.columns([1,1,2])
-                with b1:
-                    if st.button("🔄 Refresh",type="secondary",use_container_width=True):
-                        st.cache_data.clear(); st.rerun()
-                with b2:
-                    if st.button("✏️ Update Master File",type="secondary",use_container_width=True):
-                        st.session_state["show_update_master"]=True
-                if st.session_state.get("show_update_master",False):
-                    with st.expander("📤 Upload New Master Assignment File",expanded=True):
-                        st.warning("⚠️ This will replace current master data in Google Sheets.")
-                        fu=st.file_uploader("New master file (Excel/CSV)",type=["xlsx","csv"],key="u_mu")
-                        cs,cc=st.columns(2)
-                        with cc:
-                            if st.button("❌ Cancel",use_container_width=True):
-                                st.session_state["show_update_master"]=False; st.rerun()
-                        with cs:
-                            if fu:
-                                ok,msg=validate_upload(fu)
-                                if not ok: st.error(f"⚠️ {msg}")
-                                else:
-                                    if st.button("💾 Save & Update",type="primary",use_container_width=True):
-                                        with st.spinner("Uploading…"):
-                                            dfn=smart_load_dataframe(fu.getvalue(),hashlib.md5(fu.getvalue()).hexdigest())
-                                            if dfn is None: st.error("Cannot read file.")
-                                            elif save_master_to_sheets(user,dfn,sheet_url):
-                                                st.success("✅ Updated!"); st.session_state["show_update_master"]=False
-                                                st.cache_data.clear(); time.sleep(1); st.rerun()
-                                            else: st.error("❌ Upload failed. Check Google Sheet sharing.")
+                # Officers get Refresh only — upload/update is Admin-only
+                if st.button("🔄 Refresh",type="secondary"):
+                    st.cache_data.clear(); st.rerun()
+                st.caption("📌 Master data is managed by the District Admin. Contact admin to update.")
             else:
-                st.warning("⚠️ No master data found. Upload once to initialise.")
-                fi=st.file_uploader("Master Assignment File (Excel/CSV)",type=["xlsx","csv"],key="u_mi")
-                if fi:
-                    ok,msg=validate_upload(fi)
-                    if not ok: st.error(f"⚠️ {msg}")
-                    else:
-                        if st.button("💾 Initialize Google Sheets",type="primary"):
-                            with st.spinner("Uploading…"):
-                                dfi=smart_load_dataframe(fi.getvalue(),hashlib.md5(fi.getvalue()).hexdigest())
-                                if dfi is None: st.error("Cannot read file.")
-                                elif save_master_to_sheets(user,dfi,sheet_url):
-                                    st.success("✅ Initialised!"); st.cache_data.clear(); time.sleep(1); st.rerun()
-                                else: st.error("❌ Failed. Check Google Sheet sharing settings.")
+                st.warning("⚠️ Master data not yet loaded for your taluk.")
+                st.info("📌 Please contact the District Admin (Mandya_Admin) to upload the master assignment file for your taluk.")
         else:
             st.info("💡 Google Sheets not configured — local file mode.")
             uf=os.path.join("user_data",user); os.makedirs(uf,exist_ok=True)
