@@ -5,7 +5,7 @@ Fixes applied: memory optimisation, security hardening, error handling, input va
 """
 
 import streamlit as st
-import os, sys, logging, re, textwrap, json, gc, time, hashlib, traceback, io, base64
+import os, sys, logging, hmac, re, textwrap, json, gc, time, hashlib, traceback, io, base64
 import pandas as pd
 import numpy as np
 import matplotlib
@@ -57,6 +57,16 @@ class AppConfig:
     _officers = sorted(u for u in USER_MAP if u != "Mandya_Admin")
     AUTHORIZED_USERS = _officers + ["Mandya_Admin"]
 
+    # Named constants for file column positions (prevents silent breakage if format changes)
+    MONITOR_COL_MAPPED      = 4   # col E: enumerator mapping indicator
+    MONITOR_COL_GW          = 9   # col J: Total GW schedules
+    MONITOR_COL_SW          = 10  # col K: Total SW schedules
+    MONITOR_COL_WB          = 11  # col L: Total WB schedules
+    MONITOR_COL_NOT_STARTED = 21  # col V: Not started flag
+    MONITOR_COL_ENumerator  = 5   # col F: Enumerator name (fallback index)
+    ASSIGN_COL_VILLAGE      = 1   # col B: Village name in assignment file
+    MONITOR_COL_VILLAGE     = 3   # col D: Village name in monitoring file
+
     # Regex: only allow safe characters in strings used as file-path segments
     _SAFE = re.compile(r'^[A-Za-z0-9 _.()-]+$')
 
@@ -81,7 +91,7 @@ _TALUK_ORDER = [
     "K.R. Pete Taluk","Maddur Taluk","Malavalli Taluk","Mandya Taluk",
     "Nagamangala Taluk","Pandavapura Taluk","Srirangapatna Taluk",
 ]
-_DATA_DIR = "central_data"
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "central_data")
 
 # ──────────────────────────────────────────────────────────────────────
 # 2. SECURITY HELPERS
@@ -233,7 +243,7 @@ def save_taluk_metrics(taluk: str, m: Dict) -> None:
             df = pd.read_csv(hist)
             df = df[~((df["Date"]==today)&(df["Taluk"]==taluk))]
             df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
-            cutoff = (datetime.now()-timedelta(days=AppConfig.HISTORY_DAYS)).strftime("%Y-%m-%d")
+            cutoff = (_ist_now()-timedelta(days=AppConfig.HISTORY_DAYS)).strftime("%Y-%m-%d")
             df = df[df["Date"]>=cutoff]
         else:
             df = pd.DataFrame([row])
@@ -251,6 +261,7 @@ def get_history_data(date) -> Dict[str,int]:
     except Exception as e:
         logger.error("get_history_data: %s", e); return {}
 
+@st.cache_data(show_spinner=False, ttl=60)
 def get_all_taluk_data() -> List[Dict]:
     os.makedirs(_DATA_DIR, exist_ok=True)
     empty = lambda t: {"taluk":t,"total_villages":0,"completed_v":0,"in_progress":0,
@@ -269,6 +280,7 @@ def get_all_taluk_data() -> List[Dict]:
 # ──────────────────────────────────────────────────────────────────────
 # 6. GOOGLE SHEETS
 # ──────────────────────────────────────────────────────────────────────
+@st.cache_resource(show_spinner=False, ttl=3600)
 def _gs_client() -> Optional[gspread.Client]:
     try:
         creds = dict(st.secrets["gcp_service_account"])
@@ -353,7 +365,94 @@ def sync_district_to_sheets(df: pd.DataFrame, url: str, tab: str) -> str:
         return f"❌ Sync error: {e}"
 
 # ──────────────────────────────────────────────────────────────────────
-# 7. REPORT GENERATION  (max_entries=2 → 2×~12 MB = 24 MB peak; safe for 1 GB RAM)
+# 7. END-OF-DAY AUTO SYNC
+# ──────────────────────────────────────────────────────────────────────
+_AUTO_SYNC_FILE = os.path.join(_DATA_DIR, "auto_sync.json")
+
+def _load_auto_sync_record() -> Dict:
+    try:
+        if os.path.exists(_AUTO_SYNC_FILE):
+            with open(_AUTO_SYNC_FILE) as f:
+                return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"last_sync_date": "", "last_sync_time": ""}
+
+def _save_auto_sync_record(date_str: str, time_str: str) -> None:
+    os.makedirs(_DATA_DIR, exist_ok=True)
+    try:
+        with open(_AUTO_SYNC_FILE, "w") as f:
+            json.dump({"last_sync_date": date_str, "last_sync_time": time_str}, f)
+    except OSError as e:
+        logger.error("_save_auto_sync_record: %s", e)
+
+def check_and_auto_sync() -> None:
+    """
+    Called on every page load.
+    If IST time is between 18:45–18:59 (6:45–6:59 PM) and today has not been
+    auto-synced yet, silently sync district abstract to Google Sheets.
+    This ensures the end-of-day snapshot is captured before 7 PM IST as long
+    as someone uses the app during the 18:45–18:59 window.
+    """
+    try:
+        sheet_url = st.secrets["sheets"]["master_sheet_url"]
+    except (KeyError, FileNotFoundError, Exception):
+        return   # Google Sheets not configured — nothing to sync
+
+    now = _ist_now()
+    # Window: 18:45:00 → 18:59:59 (syncs before 7 PM IST)
+    if not (now.hour == 18 and now.minute >= 45):
+        return
+
+    today_str = now.strftime("%Y-%m-%d")
+    rec = _load_auto_sync_record()
+    if rec.get("last_sync_date") == today_str:
+        return   # already synced today
+
+    # Build the district abstract DataFrame (same as admin dashboard)
+    try:
+        taluk_data   = get_all_taluk_data()
+        # Use today as both prev and curr for the nightly snapshot
+        prev_data_map = get_history_data(now.date() - timedelta(days=1))
+        rows = []
+        for idx, t in enumerate(taluk_data):
+            cg = t["gw"]; pg = prev_data_map.get(t["taluk"], 0)
+            rows.append({
+                "Sl.No": idx + 1, "State": "KARNATAKA", "District": "Mandya",
+                "Taluk": t["taluk"].replace(" Taluk",""),
+                "Total Villages": t["total_villages"],
+                "Completed Villages": t["completed_v"],
+                "In Progress": t["in_progress"],
+                "Not Started": t["not_started"],
+                "GW Submitted": t["gw"],
+                "SW Submitted": t["sw"],
+                "WB Submitted": t["wb"],
+                "Villages Submitted": t["submitted_v"],
+                f"GW {(now.date()-timedelta(days=1)).strftime('%d.%m.%Y')}": pg,
+                f"GW {now.strftime('%d.%m.%Y')}": cg,
+                "Difference": cg - pg,
+            })
+        if not rows:
+            return
+        df_snap = pd.DataFrame(rows)
+        tr: Dict = {"Sl.No":"Total","State":"","District":"","Taluk":"Grand Total"}
+        for col in df_snap.columns[4:]:
+            try:    tr[col] = df_snap[col].sum()
+            except (TypeError, ValueError): tr[col] = ""
+        df_snap = pd.concat([df_snap, pd.DataFrame([tr])], ignore_index=True)
+
+        tab_name = f"EOD_{now.strftime('%d_%m_%Y')}"   # e.g. EOD_12_02_2026
+        msg = sync_district_to_sheets(df_snap, sheet_url, tab_name)
+        if "✅" in msg:
+            _save_auto_sync_record(today_str, now.strftime("%H:%M"))
+            logger.info("Auto end-of-day sync SUCCESS → tab %s at %s IST", tab_name, now.strftime("%H:%M"))
+        else:
+            logger.error("Auto end-of-day sync FAILED: %s", msg)
+    except Exception as e:
+        logger.error("check_and_auto_sync: %s", e)
+
+# ──────────────────────────────────────────────────────────────────────
+# 8. REPORT GENERATION  (max_entries=2 → 2×~12 MB = 24 MB peak; safe for 1 GB RAM)
 @st.cache_data(show_spinner=False, ttl=120, max_entries=2)
 def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, taluk: str) -> Dict:
     plt.close("all"); gc.collect()
@@ -380,16 +479,16 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
             src = df_m[c] if c else (df_m.iloc[:,idx] if nc>idx else pd.Series(dtype=float))
             return pd.to_numeric(src, errors="coerce").fillna(0).astype(int)
 
-        gw_s = _ns("Total schedules GW", 9)
-        sw_s = _ns("Total schedules SW", 10)
-        wb_s = _ns("Total schedules WB", 11)
+        gw_s = _ns("Total schedules GW", AppConfig.MONITOR_COL_GW)
+        sw_s = _ns("Total schedules SW", AppConfig.MONITOR_COL_SW)
+        wb_s = _ns("Total schedules WB", AppConfig.MONITOR_COL_WB)
         total_v = len(df_m)
-        mapped  = int(df_m.iloc[:,4].notna().sum()) if nc>4 else 0
+        mapped  = int(df_m.iloc[:,AppConfig.MONITOR_COL_MAPPED].notna().sum()) if nc>AppConfig.MONITOR_COL_MAPPED else 0
         gw_v = int(gw_s.sum()); sw_v = int(sw_s.sum()); wb_v = int(wb_s.sum())
 
         ns_v = 0
         if nc > 21:
-            ns_v = int((df_m.iloc[:,21].astype(str).str.strip().str.lower()=="true").sum())
+            ns_v = int((df_m.iloc[:,AppConfig.MONITOR_COL_NOT_STARTED].astype(str).str.strip().str.lower()=="true").sum())
 
         c_status = next((c for c in df_m.columns if "Present status of village schedule" in c), None)
         comp_v = sub_v = 0
@@ -406,24 +505,79 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                    "completed_v":comp_v,"submitted_v":sub_v,"in_progress":ip_v,"not_started":ns_v}
         save_taluk_metrics(taluk, metrics)
 
-        # ── VAO-wise merge ───────────────────────────────────────────
-        as2 = df_a[["User",t_col]].copy()
-        as2["CK"] = as2["User"].apply(clean_name)
-        as2[t_col] = pd.to_numeric(as2[t_col],errors="coerce").fillna(0)
-        km  = as2.groupby("CK")["User"].first().to_dict()
-        ga  = as2.groupby("CK")[t_col].sum().reset_index()
+        # ── Village-code extraction helper ──────────────────────────
+        # Both files embed a unique 6-digit census code in the village name:
+        #   Assignment  : "614718 - M.Shivapura"  → 614718
+        #   Monitoring  : "Aslishivapura(614722)"  → 614722
+        # This code is the ONLY reliable join key — name spellings differ.
+        _code_re = re.compile(r'\b(\d{5,6})\b')
+        def _vcode(s: Any) -> Optional[str]:
+            m = _code_re.search(str(s))
+            return m.group(1) if m else None
 
-        enu = next((c for c in df_m.columns if c.strip().lower()=="enu name"), None)
-        if enu is None and nc>5: enu = df_m.columns[5]
-        if enu is None: raise ValueError("No enumerator name column found.")
+        vil_a_col = df_a.columns[AppConfig.ASSIGN_COL_VILLAGE]  if df_a.shape[1] > AppConfig.ASSIGN_COL_VILLAGE  else None
+        vil_m_col = df_m.columns[AppConfig.MONITOR_COL_VILLAGE] if df_m.shape[1] > AppConfig.MONITOR_COL_VILLAGE else None
 
-        tmp = pd.DataFrame({"GW":gw_s,"CK":df_m[enu].astype(str).apply(clean_name)})
-        gm  = tmp.groupby("CK")["GW"].sum().reset_index().rename(columns={"GW":"Completed"})
-        del df_a, df_m, as2, tmp; gc.collect()
+        if vil_a_col is None or vil_m_col is None:
+            raise ValueError("Village column not found in one of the files.")
 
-        fin = pd.merge(ga, gm, on="CK", how="left").fillna(0)
-        fin.rename(columns={t_col:"Assigned"}, inplace=True)
-        fin["Name"] = fin["CK"].map(km).fillna(fin["CK"]).str.title()
+        # Assign village codes to both frames
+        df_a["_VCode"] = df_a[vil_a_col].astype(str).apply(_vcode)
+        df_m["_VCode"] = df_m[vil_m_col].astype(str).apply(_vcode)
+        df_m["_GW"]    = gw_s   # Total GW schedules (col J) — already parsed above
+
+        codes_a = df_a["_VCode"].notna().sum()
+        codes_m = df_m["_VCode"].notna().sum()
+        logger.info("Village codes extracted — Assignment: %d/%d, Monitoring: %d/%d",
+                    codes_a, len(df_a), codes_m, len(df_m))
+
+        # Monitoring: sum GW completed per village code
+        mon_by_code = (df_m.groupby("_VCode")["_GW"]
+                       .sum().reset_index()
+                       .rename(columns={"_GW": "GW_Done"}))
+        mon_vil_name = (df_m.groupby("_VCode")[vil_m_col]
+                        .first().reset_index()
+                        .rename(columns={vil_m_col: "VillageRaw_M"}))
+
+        # Assignment prep
+        df_a[t_col] = pd.to_numeric(df_a[t_col], errors="coerce").fillna(0)
+        df_a["VAO_CK"] = df_a["User"].astype(str).apply(clean_name)
+        km = df_a.groupby("VAO_CK")["User"].first().to_dict()
+
+        # ── Village-level joined frame (kept for village Excel) ──────
+        vil_fin = df_a[["VAO_CK", "_VCode", vil_a_col, t_col]].copy()
+        vil_fin = vil_fin.merge(mon_by_code, on="_VCode", how="left")
+        vil_fin = vil_fin.merge(mon_vil_name, on="_VCode", how="left")
+        vil_fin["GW_Done"] = vil_fin["GW_Done"].fillna(0).astype(int)
+        vil_fin.rename(columns={t_col: "GW_Assigned"}, inplace=True)
+        # Display name: prefer monitoring village name, fall back to assignment name
+        vil_fin["Village"] = vil_fin["VillageRaw_M"].combine_first(vil_fin[vil_a_col]).astype(str).str.strip()
+        vil_fin["VAO_Name"] = vil_fin["VAO_CK"].map(km).fillna(vil_fin["VAO_CK"]).str.title()
+        vil_fin["Pct_v"] = np.where(
+            vil_fin["GW_Assigned"] > 0,
+            vil_fin["GW_Done"] / vil_fin["GW_Assigned"],
+            np.where(vil_fin["GW_Done"] > 0, 1.0, 0.0)
+        )
+        vil_fin = vil_fin.sort_values(["VAO_Name", "Village"]).reset_index(drop=True)
+        have_village_data = True
+
+        # ── VAO-wise aggregation (derived from village-level join) ───
+        # Completed = sum of col-J GW values for all villages belonging to this VAO
+        ga = (df_a.groupby("VAO_CK")[t_col].sum()
+              .reset_index().rename(columns={t_col: "Assigned"}))
+        gm = (vil_fin.groupby("VAO_CK")["GW_Done"].sum()
+              .reset_index().rename(columns={"GW_Done": "Completed"}))
+
+        total_a_check = int(df_a[t_col].sum())
+        total_c_check = int(vil_fin["GW_Done"].sum())
+        logger.info("VAO join → Assigned: %d, Completed: %d (via village-code join)",
+                    total_a_check, total_c_check)
+
+        del df_m; gc.collect()
+
+        fin = pd.merge(ga, gm, on="VAO_CK", how="left").fillna(0)
+        fin["Name"] = fin["VAO_CK"].map(km).fillna(fin["VAO_CK"]).str.title()
+        del df_a; gc.collect()
         fin["Pct"]  = np.where(fin["Assigned"]>0, fin["Completed"]/fin["Assigned"],
                                np.where(fin["Completed"]>0,1.0,0.0))
         fin = fin.sort_values("Completed",ascending=False).reset_index(drop=True)
@@ -462,6 +616,119 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                     else: ws2.write(rn,ci,v,fb)
             ws2.set_column(0,0,8); ws2.set_column(1,1,35); ws2.set_column(2,4,15)
         b_xl.seek(0); del out; gc.collect()
+
+        # ── Village-wise Excel ────────────────────────────────────────
+        b_vill = None
+        if have_village_data:
+            try:
+                vill_title = (f"{taluk}: VAO & Village wise GW Schedules — "
+                              f"Assigned (6th MI Census) vs Completed (7th MI Census)\n(Generated on: {ts})")
+
+                b_vill = io.BytesIO()
+                with pd.ExcelWriter(b_vill, engine="xlsxwriter") as vwr:
+                    vwb = vwr.book
+                    vws = vwb.add_worksheet("Village_Report")
+                    VF = lambda **k: vwb.add_format(k)
+                    # Formats
+                    v_title = VF(bold=True,font_size=13,align="center",valign="vcenter",
+                                 text_wrap=True,border=1,bg_color="#D3D3D3")
+                    v_hdr   = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#E0E0E0",text_wrap=True,font_size=10)
+                    v_vao   = VF(bold=True,border=1,align="left",valign="vcenter",
+                                 bg_color="#C9DAF8",font_size=10)   # light blue VAO header
+                    v_vao_c = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#C9DAF8",font_size=10)
+                    v_vao_p = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#C9DAF8",font_size=10,num_format="0.0%")
+                    v_sub   = VF(bold=True,border=1,align="left",valign="vcenter",
+                                 bg_color="#FFF2CC",font_size=10)   # yellow sub-total
+                    v_sub_c = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#FFF2CC",font_size=10)
+                    v_sub_p = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#FFF2CC",font_size=10,num_format="0.0%")
+                    v_body  = VF(border=1,align="left",valign="vcenter",font_size=10)
+                    v_body_c= VF(border=1,align="center",valign="vcenter",font_size=10)
+                    v_green = VF(bg_color="#C6EFCE",font_color="#006100",border=1,
+                                 num_format="0.0%",align="center",font_size=10)
+                    v_red   = VF(bg_color="#FFC7CE",font_color="#9C0006",border=1,
+                                 num_format="0.0%",align="center",font_size=10)
+                    v_tot   = VF(bold=True,border=1,align="left",valign="vcenter",
+                                 bg_color="#F2F2F2",font_size=10)
+                    v_tot_c = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#F2F2F2",font_size=10)
+                    v_tot_p = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#F2F2F2",font_size=10,num_format="0.0%")
+
+                    # Column widths: S.No | VAO Name | Village Name | Assigned | Completed | %
+                    col_w = [6, 32, 30, 14, 14, 12]
+                    for ci, w in enumerate(col_w): vws.set_column(ci, ci, w)
+
+                    # Title (rows 0-2)
+                    vws.merge_range(0, 0, 2, 5, vill_title, v_title)
+                    vws.set_row(0, 40)
+
+                    # Header row 3
+                    hdrs = ["S. No.", "VAO Full Name", "Village Name",
+                            "GW Assigned\n(6th MI Census)", "GW Completed\n(7th MI Census)", "% Completed"]
+                    for ci, h in enumerate(hdrs): vws.write(3, ci, h, v_hdr)
+                    vws.set_row(3, 35)
+
+                    rn = 4    # current Excel row
+                    sno = 1   # serial number counter
+                    grand_a = grand_c = 0
+
+                    for vao_name, vao_grp in vil_fin.groupby("VAO_Name", sort=False):
+                        vao_a = int(vao_grp["GW_Assigned"].sum())
+                        vao_c = int(vao_grp["GW_Done"].sum())
+                        vao_p = (vao_c / vao_a) if vao_a > 0 else (1.0 if vao_c > 0 else 0.0)
+
+                        # VAO header row (spans S.No col blank, then name, then totals)
+                        vws.write(rn, 0, "", v_vao_c)
+                        vws.write(rn, 1, vao_name, v_vao)
+                        vws.write(rn, 2, f"[{len(vao_grp)} villages]", v_vao)
+                        vws.write(rn, 3, vao_a, v_vao_c)
+                        vws.write(rn, 4, vao_c, v_vao_c)
+                        vws.write(rn, 5, vao_p, v_vao_p)
+                        rn += 1
+
+                        # Village rows
+                        for _, vrow in vao_grp.iterrows():
+                            va_ = int(vrow["GW_Assigned"])
+                            vc_ = int(vrow["GW_Done"])
+                            vp_ = float(vrow["Pct_v"])
+                            good = vp_ > 0.1 or (va_ == 0 and vc_ > 0)
+                            vws.write(rn, 0, sno,           v_body_c)
+                            vws.write(rn, 1, "",            v_body_c)
+                            vws.write(rn, 2, vrow["Village"],v_body)
+                            vws.write(rn, 3, va_,           v_body_c)
+                            vws.write(rn, 4, vc_,           v_body_c)
+                            vws.write(rn, 5, vp_,           v_green if good else v_red)
+                            rn += 1; sno += 1
+
+                        # VAO sub-total row
+                        vws.write(rn, 0, "",            v_sub_c)
+                        vws.write(rn, 1, f"Sub-Total — {vao_name}", v_sub)
+                        vws.write(rn, 2, "",            v_sub_c)
+                        vws.write(rn, 3, vao_a,         v_sub_c)
+                        vws.write(rn, 4, vao_c,         v_sub_c)
+                        vws.write(rn, 5, vao_p,         v_sub_p)
+                        rn += 1
+                        grand_a += vao_a; grand_c += vao_c
+
+                    # Grand Total row
+                    grand_p = (grand_c / grand_a) if grand_a > 0 else 0.0
+                    vws.write(rn, 0, "",          v_tot_c)
+                    vws.write(rn, 1, "Grand Total",v_tot)
+                    vws.write(rn, 2, "",          v_tot_c)
+                    vws.write(rn, 3, grand_a,     v_tot_c)
+                    vws.write(rn, 4, grand_c,     v_tot_c)
+                    vws.write(rn, 5, grand_p,     v_tot_p)
+
+                    del vil_fin; gc.collect()
+                b_vill.seek(0)
+            except Exception as ve:
+                logger.error("Village Excel generation failed: %s", ve)
+                b_vill = None
 
         # ── Status Card ──────────────────────────────────────────────
         card = [["Total No. of Villages",total_v],["No. of Completed Villages",comp_v],
@@ -521,7 +788,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
 
         del p; gc.collect(); plt.close("all")
         logger.info("Report OK: %s", taluk)
-        return {"x":b_xl,"c":b_card,"g":b_g,"metrics":metrics}
+        return {"x":b_xl,"v":b_vill,"c":b_card,"g":b_g,"metrics":metrics}
 
     except ValueError as e: raise RuntimeError(str(e)) from None
     except Exception as e:
@@ -564,7 +831,9 @@ def build_admin_excel(df: pd.DataFrame, date_str: str) -> bytes:
             for ci,w in enumerate([6,10,10,14,12,12,14,12,14,14,14,14,12,12,12][:nc]):
                 ws.set_column(ci,ci,w)
             ws.set_row(3,40)
-    except Exception as e: logger.error("build_admin_excel: %s", e)
+    except Exception as e:
+        logger.error("build_admin_excel: %s", e)
+        return None
     b.seek(0); return b.read()
 
 # ──────────────────────────────────────────────────────────────────────
@@ -638,7 +907,8 @@ def render_admin():
                         st.warning(f"⚠️ This will REPLACE existing master data for {sel_taluk}.")
                     if st.button(btn_label, type="primary", key="admin_master_save"):
                         with st.spinner(f"Uploading master file for {sel_taluk}…"):
-                            dfa2 = smart_load_dataframe(fa.getvalue(), hashlib.md5(fa.getvalue()).hexdigest())
+                            _fa_bytes = fa.getvalue()
+                            dfa2 = smart_load_dataframe(_fa_bytes, hashlib.md5(_fa_bytes).hexdigest())
                             if dfa2 is None:
                                 st.error("❌ Cannot read the uploaded file.")
                             elif save_master_to_sheets(sel_user, dfa2, sheet_url):
@@ -682,7 +952,10 @@ def render_admin():
     xb=build_admin_excel(df,today_d)
     c1,c2,c3=st.columns([1,1,2])
     with c1:
-        st.download_button("📥 Download Excel (Formatted)",xb,
+        if xb is None:
+            st.error("❌ Excel generation failed. Check logs.")
+        else:
+          st.download_button("📥 Download Excel (Formatted)",xb,
                            f"Mandya_Abstract_{now.strftime('%d%m%Y')}.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            use_container_width=True,type="primary")
@@ -731,6 +1004,7 @@ def main():
     inject_css()
     if "logged_in" not in st.session_state: st.session_state["logged_in"]=False
     if st.session_state["logged_in"]: check_session_timeout()
+    check_and_auto_sync()   # silent end-of-day sync every page interaction (23:45–23:59 IST)
 
     # ── Login ──────────────────────────────────────────────────────
     if not st.session_state["logged_in"]:
@@ -745,7 +1019,7 @@ def main():
                 pwd=st.text_input("Password",type="password")
                 if st.form_submit_button("Secure Login",type="primary",use_container_width=True):
                     if usr=="Select…": st.warning("Please select your office.")
-                    elif pwd==get_password() and usr in AppConfig.AUTHORIZED_USERS:
+                    elif hmac.compare_digest(pwd, get_password()) and usr in AppConfig.AUTHORIZED_USERS:
                         st.session_state.update({"logged_in":True,"user":usr,"last_active":time.time(),
                                                   "_login_tries":0,"show_update_master":False,"report_data":None})
                         logger.info("Login: %s", usr); st.rerun()
@@ -867,11 +1141,25 @@ def main():
         st.image(d["g"],use_container_width=True)
         st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
         c1,c2=st.columns([.7,.3])
-        with c1: st.markdown('<p class="section-header">2. Detailed Report (Excel)</p><p style="font-size:.9rem;color:#5f6368">Complete VAO-wise data.</p>',unsafe_allow_html=True)
-        with c2: st.download_button("📥 Download Excel",d["x"],"Progress_Report.xlsx",use_container_width=True)
+        with c1: st.markdown('<p class="section-header">2. VAO-wise Summary (Excel)</p><p style="font-size:.9rem;color:#5f6368">VAO-wise Assigned vs Completed GW schedules.</p>',unsafe_allow_html=True)
+        with c2: st.download_button("📥 Download Excel",d["x"],"VAO_Summary_Report.xlsx",use_container_width=True)
         st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
         c1,c2=st.columns([.7,.3])
-        with c1: st.markdown('<p class="section-header">3. Taluk Status Card</p><p style="font-size:.9rem;color:#5f6368">Optimised for sharing.</p>',unsafe_allow_html=True)
+        with c1:
+            st.markdown('<p class="section-header">3. Village-wise Detailed Report (Excel)</p>'
+                        '<p style="font-size:.9rem;color:#5f6368">VAO-wise village breakdown — Assigned vs Completed GW schedules.</p>',
+                        unsafe_allow_html=True)
+        with c2:
+            if d.get("v"):
+                st.download_button("📥 Download Village Report",d["v"],
+                                   "Village_Wise_Report.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                   use_container_width=True,type="primary")
+            else:
+                st.caption("⚠️ Village column not detected in files.")
+        st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
+        c1,c2=st.columns([.7,.3])
+        with c1: st.markdown('<p class="section-header">4. Taluk Status Card</p><p style="font-size:.9rem;color:#5f6368">Optimised for sharing.</p>',unsafe_allow_html=True)
         with c2: st.download_button("📥 Download Card",d["c"],"Taluk_Summary.png","image/png",use_container_width=True)
         st.image(d["c"],width=600)
 
