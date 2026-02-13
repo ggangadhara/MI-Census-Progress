@@ -251,6 +251,7 @@ def save_taluk_metrics(taluk: str, m: Dict) -> None:
     except Exception as e:
         logger.error("save_taluk_metrics history: %s", e)
 
+@st.cache_data(show_spinner=False, ttl=60)
 def get_history_data(date) -> Dict[str,int]:
     hist = os.path.join(_DATA_DIR,"daily_history.csv")
     if not os.path.exists(hist): return {}
@@ -562,16 +563,13 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         have_village_data = True
 
         # ── VAO-wise aggregation (derived from village-level join) ───
-        # Completed = sum of col-J GW values for all villages belonging to this VAO
         ga = (df_a.groupby("VAO_CK")[t_col].sum()
               .reset_index().rename(columns={t_col: "Assigned"}))
         gm = (vil_fin.groupby("VAO_CK")["GW_Done"].sum()
               .reset_index().rename(columns={"GW_Done": "Completed"}))
 
-        total_a_check = int(df_a[t_col].sum())
-        total_c_check = int(vil_fin["GW_Done"].sum())
         logger.info("VAO join → Assigned: %d, Completed: %d (via village-code join)",
-                    total_a_check, total_c_check)
+                    int(df_a[t_col].sum()), int(gm["Completed"].sum()))
 
         del df_m; gc.collect()
 
@@ -697,32 +695,32 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                             vc_ = int(vrow["GW_Done"])
                             vp_ = float(vrow["Pct_v"])
                             good = vp_ > 0.1 or (va_ == 0 and vc_ > 0)
-                            vws.write(rn, 0, sno,           v_body_c)
-                            vws.write(rn, 1, "",            v_body_c)
-                            vws.write(rn, 2, vrow["Village"],v_body)
-                            vws.write(rn, 3, va_,           v_body_c)
-                            vws.write(rn, 4, vc_,           v_body_c)
-                            vws.write(rn, 5, vp_,           v_green if good else v_red)
+                            vws.write(rn, 0, sno,            v_body_c)
+                            vws.write(rn, 1, "",             v_body_c)
+                            vws.write(rn, 2, vrow["Village"], v_body)
+                            vws.write(rn, 3, va_,            v_body_c)
+                            vws.write(rn, 4, vc_,            v_body_c)
+                            vws.write(rn, 5, vp_,            v_green if good else v_red)
                             rn += 1; sno += 1
 
                         # VAO sub-total row
-                        vws.write(rn, 0, "",            v_sub_c)
-                        vws.write(rn, 1, f"Sub-Total — {vao_name}", v_sub)
-                        vws.write(rn, 2, "",            v_sub_c)
-                        vws.write(rn, 3, vao_a,         v_sub_c)
-                        vws.write(rn, 4, vao_c,         v_sub_c)
-                        vws.write(rn, 5, vao_p,         v_sub_p)
+                        vws.write(rn, 0, "",                         v_sub_c)
+                        vws.write(rn, 1, f"Sub-Total — {vao_name}",  v_sub)
+                        vws.write(rn, 2, "",                         v_sub_c)
+                        vws.write(rn, 3, vao_a,                      v_sub_c)
+                        vws.write(rn, 4, vao_c,                      v_sub_c)
+                        vws.write(rn, 5, vao_p,                      v_sub_p)
                         rn += 1
                         grand_a += vao_a; grand_c += vao_c
 
                     # Grand Total row
                     grand_p = (grand_c / grand_a) if grand_a > 0 else 0.0
-                    vws.write(rn, 0, "",          v_tot_c)
-                    vws.write(rn, 1, "Grand Total",v_tot)
-                    vws.write(rn, 2, "",          v_tot_c)
-                    vws.write(rn, 3, grand_a,     v_tot_c)
-                    vws.write(rn, 4, grand_c,     v_tot_c)
-                    vws.write(rn, 5, grand_p,     v_tot_p)
+                    vws.write(rn, 0, "",           v_tot_c)
+                    vws.write(rn, 1, "Grand Total", v_tot)
+                    vws.write(rn, 2, "",           v_tot_c)
+                    vws.write(rn, 3, grand_a,      v_tot_c)
+                    vws.write(rn, 4, grand_c,      v_tot_c)
+                    vws.write(rn, 5, grand_p,      v_tot_p)
 
                     del vil_fin; gc.collect()
                 b_vill.seek(0)
@@ -850,6 +848,10 @@ html,body,[class*="css"]{{font-family:'Roboto',sans-serif;}}
 [data-testid="InputInstructions"]{{display:none!important;}}
 .status-pill{{display:inline-flex;align-items:center;padding:.5rem 1rem;background:#e6f4ea;color:#137333;border-radius:999px;font-weight:500;border:1px solid #ceead6;}}
 .section-header{{font-size:1.1rem;font-weight:600;color:{AppConfig.COLORS['primary']};margin-top:.5rem;text-transform:uppercase;}}
+.section-sub{{font-size:.9rem;color:#5f6368;margin-top:.15rem;}}
+@media(prefers-color-scheme:dark){{.section-sub{{color:#adb5bd;}}}}
+[data-theme="dark"] .section-sub{{color:#adb5bd!important;}}
+[data-theme="light"] .section-sub{{color:#5f6368!important;}}
 .custom-footer{{position:fixed;left:0;bottom:0;width:100%;background:#000!important;color:#fff!important;text-align:center;padding:1.5rem 1rem 2.5rem;border-top:1px solid #333;z-index:2147483647!important;font-size:15px!important;line-height:1.6;}}
 @media(max-width:640px){{.custom-footer{{font-size:13px!important;}}}}
 </style>
@@ -1105,7 +1107,6 @@ def main():
             ok,msg=validate_upload(f3)
             if not ok: st.error(f"⚠️ {msg}")
             else:
-                st.info("📊 Uploaded Task Monitoring File - So Village counts auto-calculated.")
                 if st.button("⚡ Generate Reports",type="primary",use_container_width=True):
                     st.session_state["report_data"]=None; gc.collect()
                     with st.spinner("Processing…"):
@@ -1135,32 +1136,55 @@ def main():
     if st.session_state.get("report_data"):
         d=st.session_state["report_data"]
         st.success("✅ Reports Generated"); st.markdown("---")
-        c1,c2=st.columns([.7,.3])
-        with c1: st.markdown('<p class="section-header">1. Progress Graph</p><p style="font-size:.9rem;color:#5f6368">VAO-wise progress overview.</p>',unsafe_allow_html=True)
-        with c2: st.download_button("📥 Download Graph",d["g"],"Progress_Graph.png","image/png",use_container_width=True)
-        st.image(d["g"],use_container_width=True)
-        st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
-        c1,c2=st.columns([.7,.3])
-        with c1: st.markdown('<p class="section-header">2. VAO-wise Summary (Excel)</p><p style="font-size:.9rem;color:#5f6368">VAO-wise Assigned vs Completed GW schedules.</p>',unsafe_allow_html=True)
-        with c2: st.download_button("📥 Download Excel",d["x"],"VAO_Summary_Report.xlsx",use_container_width=True)
-        st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
+        # ── 1. Progress Graph ─────────────────────────────────────────
         c1,c2=st.columns([.7,.3])
         with c1:
-            st.markdown('<p class="section-header">3. Village-wise Detailed Report (Excel)</p>'
-                        '<p style="font-size:.9rem;color:#5f6368">VAO-wise village breakdown — Assigned vs Completed GW schedules.</p>',
+            st.markdown('<p class="section-header">1. VAO wise Progress Graph</p>'
+                        '<p class="section-sub">VAO-wise GW schedules — Assigned vs Completed.</p>',
+                        unsafe_allow_html=True)
+        with c2:
+            st.download_button("📊 Download VAO wise Graph",d["g"],
+                               "VAO_Progress_Graph.png","image/png",
+                               use_container_width=True,type="primary")
+        st.image(d["g"],use_container_width=True)
+        st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
+        # ── 2. VAO-wise Summary Excel ─────────────────────────────────
+        c1,c2=st.columns([.7,.3])
+        with c1:
+            st.markdown('<p class="section-header">2. VAO wise Summary</p>'
+                        '<p class="section-sub">VAO-wise Assigned vs Completed GW schedules.</p>',
+                        unsafe_allow_html=True)
+        with c2:
+            st.download_button("📥 Download VAO wise Progress Report",d["x"],
+                               "VAO_Summary_Report.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                               use_container_width=True,type="primary")
+        st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
+        # ── 3. Village-wise Report Excel ──────────────────────────────
+        c1,c2=st.columns([.7,.3])
+        with c1:
+            st.markdown('<p class="section-header">3. VAO and Village wise Progress Report</p>'
+                        '<p class="section-sub">VAO-wise village breakdown — Assigned vs Completed GW schedules.</p>',
                         unsafe_allow_html=True)
         with c2:
             if d.get("v"):
-                st.download_button("📥 Download Village Report",d["v"],
+                st.download_button("📥 Download VAO and Village wise Progress Report",d["v"],
                                    "Village_Wise_Report.xlsx",
                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    use_container_width=True,type="primary")
             else:
                 st.caption("⚠️ Village column not detected in files.")
         st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
+        # ── 4. Taluk Status Card ──────────────────────────────────────
         c1,c2=st.columns([.7,.3])
-        with c1: st.markdown('<p class="section-header">4. Taluk Status Card</p><p style="font-size:.9rem;color:#5f6368">Optimised for sharing.</p>',unsafe_allow_html=True)
-        with c2: st.download_button("📥 Download Card",d["c"],"Taluk_Summary.png","image/png",use_container_width=True)
+        with c1:
+            st.markdown('<p class="section-header">4. Taluk Status Card</p>'
+                        '<p class="section-sub">Summary card — optimised for sharing.</p>',
+                        unsafe_allow_html=True)
+        with c2:
+            st.download_button("📋 Download Taluk Status",d["c"],
+                               "Taluk_Status_Card.png","image/png",
+                               use_container_width=True,type="primary")
         st.image(d["c"],width=600)
 
 if __name__=="__main__":
