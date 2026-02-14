@@ -610,7 +610,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                 rn=4+ri; last=ri==len(out)-1
                 for ci,v in enumerate(row):
                     if last: ws2.write(rn,ci,v,fp_ if ci==4 else ft2)
-                    elif ci==4: ws2.write(rn,ci,v,fg if (v>0.1 or (row[2]==0 and row[3]>0)) else fr)
+                    elif ci==4: ws2.write(rn,ci,v,fg if (v>0.2 or (row[2]==0 and row[3]>0)) else fr)
                     else: ws2.write(rn,ci,v,fb)
             ws2.set_column(0,0,8); ws2.set_column(1,1,35); ws2.set_column(2,4,15)
         b_xl.seek(0); del out; gc.collect()
@@ -694,7 +694,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                             va_ = int(vrow["GW_Assigned"])
                             vc_ = int(vrow["GW_Done"])
                             vp_ = float(vrow["Pct_v"])
-                            good = vp_ > 0.1 or (va_ == 0 and vc_ > 0)
+                            good = vp_ > 0.2 or (va_ == 0 and vc_ > 0)
                             vws.write(rn, 0, sno,            v_body_c)
                             vws.write(rn, 1, "",             v_body_c)
                             vws.write(rn, 2, vrow["Village"], v_body)
@@ -757,7 +757,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         fig_g,ax=plt.subplots(figsize=(14,max(8,len(p)*0.55)))
         p["N"]=p["Name"].apply(lambda x: f"{x.split()[0]} {x.split()[1][0]}." if len(x.split())>1 else x)
         ys=np.arange(len(p))
-        cols2=[AppConfig.COLORS["success"] if (pc>0.1 or (a==0 and c>0)) else AppConfig.COLORS["danger"]
+        cols2=[AppConfig.COLORS["success"] if (pc>0.2 or (a==0 and c>0)) else AppConfig.COLORS["danger"]
                for pc,a,c in zip(p["Pct"],p["Assigned"],p["Completed"])]
         ax.barh(ys,p["Assigned"],color=AppConfig.COLORS["neutral"],label="Assigned",height=0.7)
         ax.barh(ys,p["Completed"],color=cols2,height=0.5)
@@ -778,8 +778,8 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                     ha="center",va="bottom",fontsize=12,weight="bold",color="white",
                     bbox=dict(boxstyle="round,pad=0.6",fc="black",ec="none",alpha=1.0))
         ax.legend(handles=[Patch(facecolor=AppConfig.COLORS["neutral"],label="Assigned"),
-                            Patch(facecolor=AppConfig.COLORS["success"],label="Completed > 10%"),
-                            Patch(facecolor=AppConfig.COLORS["danger"],label="Completed ≤ 10%")],
+                            Patch(facecolor=AppConfig.COLORS["success"],label="Completed > 20%"),
+                            Patch(facecolor=AppConfig.COLORS["danger"],label="Completed ≤ 20%")],
                   loc="lower right",fontsize=11,framealpha=0.9)
         b_g=io.BytesIO(); plt.tight_layout(); plt.savefig(b_g,format="png",dpi=80)
         b_g.seek(0); plt.close(fig_g)  # close immediately
