@@ -588,7 +588,27 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         title_txt = (f"{taluk}: VAO wise progress of Ground Water Schemes (tube well) census "
                      f"wrt 6th Minor Irrigation Census upto 2018-19.\n(Generated on: {ts})")
 
-        # ── Excel ────────────────────────────────────────────────────
+        # ══════════════════════════════════════════════════════════════
+        # REPORT GENERATION  ·  Excel (xlsxwriter) + PDF (matplotlib)
+        # Both generated here; PDF uses PdfPages — zero extra deps.
+        # ══════════════════════════════════════════════════════════════
+        from matplotlib.backends.backend_pdf import PdfPages
+
+        # ─── shared helper: A4 portrait figure (8.27 × 11.69 in) ────
+        _A4P = (8.27, 11.69)
+
+        def _pdf_style_cell(cell, ri, ci, n_data_rows,
+                            bold=False, fg=None, bg=None,
+                            left_align=False, font_size=8):
+            cell.set_edgecolor("#BDBDBD"); cell.set_linewidth(0.3)
+            if bg:   cell.set_facecolor(bg)
+            if bold: cell.set_text_props(weight="bold", fontsize=font_size)
+            else:    cell.set_text_props(fontsize=font_size)
+            if fg:   cell.set_text_props(color=fg)
+            cell.get_text().set_ha("left" if left_align else "center")
+            cell.get_text().set_wrap(True)
+
+        # ── 1a. VAO Excel (xlsxwriter, previous style) ───────────────
         b_xl = io.BytesIO()
         with pd.ExcelWriter(b_xl, engine="xlsxwriter") as wr:
             out = fin[["S.No","Name","Assigned","Completed","Pct"]].copy()
@@ -597,136 +617,208 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
             out.to_excel(wr, index=False, startrow=3, sheet_name="Report")
             wb2=wr.book; ws2=wr.sheets["Report"]
             F=lambda **k: wb2.add_format(k)
-            ft = F(bold=True,font_size=14,align="center",valign="vcenter",text_wrap=True,border=1,bg_color="#D3D3D3")
-            fh = F(bold=True,border=1,align="center",valign="vcenter",bg_color="#E0E0E0",text_wrap=True)
-            fb = F(border=1,align="center",valign="vcenter",text_wrap=True)
-            fg = F(bg_color="#C6EFCE",font_color="#006100",border=1,num_format="0.0%",align="center")
-            fr = F(bg_color="#FFC7CE",font_color="#9C0006",border=1,num_format="0.0%",align="center")
-            fp_= F(bold=True,border=1,align="center",bg_color="#F2F2F2",num_format="0.0%")
-            ft2= F(bold=True,border=1,align="center",bg_color="#F2F2F2")
+            ft =F(bold=True,font_size=13,align="center",valign="vcenter",text_wrap=True,border=1,bg_color="#D3D3D3")
+            fh =F(bold=True,border=1,align="center",valign="vcenter",bg_color="#E0E0E0",text_wrap=True)
+            fb =F(border=1,align="center",valign="vcenter",text_wrap=True)
+            fg_=F(bg_color="#C6EFCE",font_color="#006100",border=1,num_format="0.0%",align="center")
+            fr_=F(bg_color="#FFC7CE",font_color="#9C0006",border=1,num_format="0.0%",align="center")
+            fp_=F(bold=True,border=1,align="center",bg_color="#F2F2F2",num_format="0.0%")
+            ft2=F(bold=True,border=1,align="center",bg_color="#F2F2F2")
             ws2.merge_range("A1:E3",title_txt,ft)
             for ci,cn in enumerate(out.columns): ws2.write(3,ci,cn,fh)
             for ri,row in enumerate(out.values):
                 rn=4+ri; last=ri==len(out)-1
                 for ci,v in enumerate(row):
-                    if last: ws2.write(rn,ci,v,fp_ if ci==4 else ft2)
-                    elif ci==4: ws2.write(rn,ci,v,fg if (v>0.25 or (row[2]==0 and row[3]>0)) else fr)
-                    else: ws2.write(rn,ci,v,fb)
+                    if last:    ws2.write(rn,ci,v,fp_ if ci==4 else ft2)
+                    elif ci==4: ws2.write(rn,ci,v,fg_ if (v>0.25 or (row[2]==0 and row[3]>0)) else fr_)
+                    else:       ws2.write(rn,ci,v,fb)
             ws2.set_column(0,0,8); ws2.set_column(1,1,35); ws2.set_column(2,4,15)
-        b_xl.seek(0); del out; gc.collect()
+            ws2.set_row(0,45)
+        b_xl.seek(0)
+        del out; gc.collect()
 
-        # ── Village-wise Excel ────────────────────────────────────────
-        b_vill = None
+        # ── 1b. VAO PDF (A4 portrait, auto-fit, text-wrap) ───────────
+        _vao_df = fin[["S.No","Name","Assigned","Completed","Pct"]].copy()
+        _vao_df.loc[len(_vao_df)] = [None,"Grand Total",tot_a,tot_c,prog]
+        _nr     = len(_vao_df)
+        _fp     = max(6, min(9, int(480 / (_nr + 2))))   # auto font size
+        _rh     = max(0.015, 0.82 / _nr)                  # auto row height
+        _ct, _cc = [], []
+        for _, _r in _vao_df.iterrows():
+            _p   = float(_r["Pct"]); _gt = pd.isna(_r["S.No"])
+            _gd  = _p>0.25 or (float(_r["Assigned"])==0 and float(_r["Completed"])>0)
+            _ct.append(["" if _gt else str(int(_r["S.No"])), str(_r["Name"]),
+                        str(int(_r["Assigned"])), str(int(_r["Completed"])), f"{_p*100:.1f}%"])
+            _alt = "#F2F2F2" if _gt else ("#FFFFFF" if len(_ct)%2==1 else "#F8F9FA")
+            _cc.append([_alt,_alt,_alt,_alt,"#C6EFCE" if _gd else "#FFC7CE"])
+
+        _fig_vp, _ax_vp = plt.subplots(figsize=_A4P)
+        _ax_vp.axis("off")
+        _ax_vp.set_title(title_txt, fontsize=9, fontweight="bold",
+                         loc="center", pad=8, color="#202124", wrap=True)
+        _tv = _ax_vp.table(
+            cellText=_ct, colLabels=["S.No","VAO Full Name","Assigned","Completed","% Done"],
+            cellColours=_cc, colWidths=[0.06,0.44,0.16,0.18,0.14],
+            loc="center", bbox=[0,0,1,0.93])
+        _tv.auto_set_font_size(False); _tv.set_fontsize(_fp)
+        for (_ri,_ci),_c in _tv.get_celld().items():
+            _c.set_edgecolor("#BDBDBD"); _c.set_linewidth(0.3)
+            if _ri==0:
+                _c.set_facecolor("#D3D3D3"); _c.set_text_props(weight="bold",fontsize=_fp)
+                _c.set_height(0.045)
+            else:
+                _row = _vao_df.iloc[_ri-1]
+                _c.set_height(_rh)
+                if pd.isna(_row["S.No"]): _c.set_text_props(weight="bold")
+                if _ci==4 and not pd.isna(_row["S.No"]):
+                    _p2=float(_row["Pct"]); _gd2=_p2>0.25 or (float(_row["Assigned"])==0 and float(_row["Completed"])>0)
+                    _c.set_text_props(color="#006100" if _gd2 else "#9C0006",weight="bold")
+            _c.get_text().set_ha("left" if _ci==1 else "center")
+            _c.get_text().set_wrap(True)
+
+        b_xl_pdf = io.BytesIO()
+        with PdfPages(b_xl_pdf) as _pp:
+            _pp.savefig(_fig_vp, bbox_inches="tight", dpi=120)
+        plt.close(_fig_vp)
+        b_xl_pdf.seek(0)
+        del _vao_df,_ct,_cc; gc.collect()
+
+        # ── 2a. Village Excel (xlsxwriter, previous style) ───────────
+        b_vill_xl = None; b_vill_pdf = None
         if have_village_data:
             try:
-                vill_title = (f"{taluk}: VAO & Village wise GW Schedules — "
-                              f"Assigned (6th MI Census) vs Completed (7th MI Census)\n(Generated on: {ts})")
+                _vtitle = (f"{taluk}: VAO & Village wise GW Schedules — "
+                           f"Assigned (6th MI Census) vs Completed (7th MI Census)\n"
+                           f"(Generated on: {ts})")
+                b_vill_xl = io.BytesIO()
+                with pd.ExcelWriter(b_vill_xl, engine="xlsxwriter") as vwr:
+                    vwb=vwr.book; vws=vwb.add_worksheet("Village_Report")
+                    VF=lambda **k: vwb.add_format(k)
+                    vf_ti=VF(bold=True,font_size=12,align="center",valign="vcenter",text_wrap=True,border=1,bg_color="#D3D3D3")
+                    vf_hd=VF(bold=True,border=1,align="center",valign="vcenter",bg_color="#E0E0E0",text_wrap=True,font_size=10)
+                    vf_vao =VF(bold=True,border=1,align="left",valign="vcenter",bg_color="#C9DAF8",font_size=10)
+                    vf_vaoc=VF(bold=True,border=1,align="center",valign="vcenter",bg_color="#C9DAF8",font_size=10)
+                    vf_vaop=VF(bold=True,border=1,align="center",valign="vcenter",bg_color="#C9DAF8",font_size=10,num_format="0.0%")
+                    vf_sub =VF(bold=True,border=1,align="left",valign="vcenter",bg_color="#FFF2CC",font_size=10)
+                    vf_subc=VF(bold=True,border=1,align="center",valign="vcenter",bg_color="#FFF2CC",font_size=10)
+                    vf_subp=VF(bold=True,border=1,align="center",valign="vcenter",bg_color="#FFF2CC",font_size=10,num_format="0.0%")
+                    vf_bod =VF(border=1,align="left",valign="vcenter",font_size=10,text_wrap=True)
+                    vf_bodc=VF(border=1,align="center",valign="vcenter",font_size=10)
+                    vf_grn =VF(bg_color="#C6EFCE",font_color="#006100",border=1,num_format="0.0%",align="center",font_size=10)
+                    vf_red =VF(bg_color="#FFC7CE",font_color="#9C0006",border=1,num_format="0.0%",align="center",font_size=10)
+                    vf_tot =VF(bold=True,border=1,align="left",valign="vcenter",bg_color="#F2F2F2",font_size=10)
+                    vf_totc=VF(bold=True,border=1,align="center",valign="vcenter",bg_color="#F2F2F2",font_size=10)
+                    vf_totp=VF(bold=True,border=1,align="center",valign="vcenter",bg_color="#F2F2F2",font_size=10,num_format="0.0%")
+                    for ci,w in enumerate([6,30,28,14,14,12]): vws.set_column(ci,ci,w)
+                    vws.merge_range(0,0,2,5,_vtitle,vf_ti); vws.set_row(0,40)
+                    for ci,h in enumerate(["S. No.","VAO Full Name","Village Name",
+                                            "GW Assigned\n(6th MI Census)",
+                                            "GW Completed\n(7th MI Census)","% Completed"]):
+                        vws.write(3,ci,h,vf_hd)
+                    vws.set_row(3,32)
+                    rn=4; sno=1; ga_v=gc_v=0
+                    for vao_nm,vao_grp in vil_fin.groupby("VAO_Name",sort=False):
+                        va_a=int(vao_grp["GW_Assigned"].sum()); va_c=int(vao_grp["GW_Done"].sum())
+                        va_p=(va_c/va_a) if va_a>0 else (1.0 if va_c>0 else 0.0)
+                        vws.write(rn,0,"",vf_vaoc); vws.write(rn,1,vao_nm,vf_vao)
+                        vws.write(rn,2,f"[{len(vao_grp)} villages]",vf_vao)
+                        vws.write(rn,3,va_a,vf_vaoc); vws.write(rn,4,va_c,vf_vaoc)
+                        vws.write(rn,5,va_p,vf_vaop); rn+=1
+                        for _,vrow in vao_grp.iterrows():
+                            vva=int(vrow["GW_Assigned"]); vvc=int(vrow["GW_Done"]); vvp=float(vrow["Pct_v"])
+                            vgd=vvp>0.25 or (vva==0 and vvc>0)
+                            vws.write(rn,0,sno,vf_bodc); vws.write(rn,1,"",vf_bodc)
+                            vws.write(rn,2,str(vrow["Village"]),vf_bod)
+                            vws.write(rn,3,vva,vf_bodc); vws.write(rn,4,vvc,vf_bodc)
+                            vws.write(rn,5,vvp,vf_grn if vgd else vf_red)
+                            rn+=1; sno+=1
+                        vws.write(rn,0,"",vf_subc); vws.write(rn,1,f"Sub-Total — {vao_nm}",vf_sub)
+                        vws.write(rn,2,"",vf_subc); vws.write(rn,3,va_a,vf_subc)
+                        vws.write(rn,4,va_c,vf_subc); vws.write(rn,5,va_p,vf_subp); rn+=1
+                        ga_v+=va_a; gc_v+=va_c
+                    gp_v=(gc_v/ga_v) if ga_v>0 else 0.0
+                    vws.write(rn,0,"",vf_totc); vws.write(rn,1,"Grand Total",vf_tot)
+                    vws.write(rn,2,"",vf_totc); vws.write(rn,3,ga_v,vf_totc)
+                    vws.write(rn,4,gc_v,vf_totc); vws.write(rn,5,gp_v,vf_totp)
+                b_vill_xl.seek(0)
+                gc.collect()
 
-                b_vill = io.BytesIO()
-                with pd.ExcelWriter(b_vill, engine="xlsxwriter") as vwr:
-                    vwb = vwr.book
-                    vws = vwb.add_worksheet("Village_Report")
-                    VF = lambda **k: vwb.add_format(k)
-                    # Formats
-                    v_title = VF(bold=True,font_size=13,align="center",valign="vcenter",
-                                 text_wrap=True,border=1,bg_color="#D3D3D3")
-                    v_hdr   = VF(bold=True,border=1,align="center",valign="vcenter",
-                                 bg_color="#E0E0E0",text_wrap=True,font_size=10)
-                    v_vao   = VF(bold=True,border=1,align="left",valign="vcenter",
-                                 bg_color="#C9DAF8",font_size=10)   # light blue VAO header
-                    v_vao_c = VF(bold=True,border=1,align="center",valign="vcenter",
-                                 bg_color="#C9DAF8",font_size=10)
-                    v_vao_p = VF(bold=True,border=1,align="center",valign="vcenter",
-                                 bg_color="#C9DAF8",font_size=10,num_format="0.0%")
-                    v_sub   = VF(bold=True,border=1,align="left",valign="vcenter",
-                                 bg_color="#FFF2CC",font_size=10)   # yellow sub-total
-                    v_sub_c = VF(bold=True,border=1,align="center",valign="vcenter",
-                                 bg_color="#FFF2CC",font_size=10)
-                    v_sub_p = VF(bold=True,border=1,align="center",valign="vcenter",
-                                 bg_color="#FFF2CC",font_size=10,num_format="0.0%")
-                    v_body  = VF(border=1,align="left",valign="vcenter",font_size=10)
-                    v_body_c= VF(border=1,align="center",valign="vcenter",font_size=10)
-                    v_green = VF(bg_color="#C6EFCE",font_color="#006100",border=1,
-                                 num_format="0.0%",align="center",font_size=10)
-                    v_red   = VF(bg_color="#FFC7CE",font_color="#9C0006",border=1,
-                                 num_format="0.0%",align="center",font_size=10)
-                    v_tot   = VF(bold=True,border=1,align="left",valign="vcenter",
-                                 bg_color="#F2F2F2",font_size=10)
-                    v_tot_c = VF(bold=True,border=1,align="center",valign="vcenter",
-                                 bg_color="#F2F2F2",font_size=10)
-                    v_tot_p = VF(bold=True,border=1,align="center",valign="vcenter",
-                                 bg_color="#F2F2F2",font_size=10,num_format="0.0%")
+                # ── 2b. Village PDF (A4 portrait, paginated, 38 rows/page) ──
+                _VPP   = 38                    # village rows per page body
+                _vpcols = ["S.No","VAO / Village","Assigned","Completed","%"]
+                _vpcw   = [0.05, 0.55, 0.13, 0.14, 0.11]
+                _vpfont = max(6, min(8, int(400/(_VPP+2))))
+                _vprh   = max(0.014, 0.82/_VPP)
 
-                    # Column widths: S.No | VAO Name | Village Name | Assigned | Completed | %
-                    col_w = [6, 32, 30, 14, 14, 12]
-                    for ci, w in enumerate(col_w): vws.set_column(ci, ci, w)
+                # Build flat row list once (memory-efficient)
+                _vprows: List[Dict] = []
+                _vpsno = 1; _vpga = _vpgc = 0
+                for vao_nm,vao_grp in vil_fin.groupby("VAO_Name",sort=False):
+                    va_a=int(vao_grp["GW_Assigned"].sum()); va_c=int(vao_grp["GW_Done"].sum())
+                    va_p=(va_c/va_a) if va_a>0 else (1.0 if va_c>0 else 0.0)
+                    _vprows.append({"t":["",f"{vao_nm}  [{len(vao_grp)} vil.]",
+                                         str(va_a),str(va_c),f"{va_p*100:.1f}%"],
+                                    "bg":["#C9DAF8"]*5,"bold":True,"pct":None})
+                    for _,vrow in vao_grp.iterrows():
+                        vva=int(vrow["GW_Assigned"]); vvc=int(vrow["GW_Done"]); vvp=float(vrow["Pct_v"])
+                        vgd=vvp>0.25 or (vva==0 and vvc>0)
+                        _alt="#FFFFFF" if _vpsno%2==1 else "#EFF3FF"
+                        _vprows.append({"t":[str(_vpsno),str(vrow["Village"]),
+                                              str(vva),str(vvc),f"{vvp*100:.1f}%"],
+                                        "bg":[_alt,_alt,_alt,_alt,
+                                              "#C6EFCE" if vgd else "#FFC7CE"],
+                                        "bold":False,"pct":("#006100" if vgd else "#9C0006")})
+                        _vpsno+=1
+                    _vprows.append({"t":["",f"Sub-Total — {vao_nm}",
+                                          str(va_a),str(va_c),f"{va_p*100:.1f}%"],
+                                    "bg":["#FFF2CC"]*5,"bold":True,"pct":None})
+                    _vpga+=va_a; _vpgc+=va_c
+                _vpgp=(_vpgc/_vpga) if _vpga>0 else 0.0
+                _vprows.append({"t":["","Grand Total",str(_vpga),str(_vpgc),f"{_vpgp*100:.1f}%"],
+                                "bg":["#E8EAED"]*5,"bold":True,"pct":None})
 
-                    # Title (rows 0-2)
-                    vws.merge_range(0, 0, 2, 5, vill_title, v_title)
-                    vws.set_row(0, 40)
+                _vptitle = (f"{taluk}: VAO & Village wise GW Schedules\n"
+                            f"Assigned (6th MI Census) vs Completed (7th MI Census)\n"
+                            f"Generated on: {ts}")
+                _chunks  = [_vprows[i:i+_VPP] for i in range(0,len(_vprows),_VPP)]
 
-                    # Header row 3
-                    hdrs = ["S. No.", "VAO Full Name", "Village Name",
-                            "GW Assigned\n(6th MI Census)", "GW Completed\n(7th MI Census)", "% Completed"]
-                    for ci, h in enumerate(hdrs): vws.write(3, ci, h, v_hdr)
-                    vws.set_row(3, 35)
+                b_vill_pdf = io.BytesIO()
+                with PdfPages(b_vill_pdf) as _vpp:
+                    for _pg,_chunk in enumerate(_chunks):
+                        _fv,_av = plt.subplots(figsize=_A4P)
+                        _av.axis("off")
+                        _av.set_title(
+                            _vptitle + f"\n(Page {_pg+1} / {len(_chunks)})",
+                            fontsize=7.5, fontweight="bold", loc="center",
+                            pad=6, color="#202124")
+                        _ct2=[r["t"] for r in _chunk]
+                        _cc2=[r["bg"] for r in _chunk]
+                        _vtb=_av.table(cellText=_ct2,colLabels=_vpcols,
+                                       cellColours=_cc2,colWidths=_vpcw,
+                                       loc="center",bbox=[0,0,1,0.88])
+                        _vtb.auto_set_font_size(False); _vtb.set_fontsize(_vpfont)
+                        for (_vri,_vci),_vc in _vtb.get_celld().items():
+                            _vc.set_edgecolor("#BDBDBD"); _vc.set_linewidth(0.25)
+                            if _vri==0:
+                                _vc.set_facecolor("#D3D3D3")
+                                _vc.set_text_props(weight="bold",fontsize=_vpfont)
+                                _vc.set_height(0.042)
+                            else:
+                                _rm=_chunk[_vri-1]
+                                _vc.set_height(_vprh)
+                                if _rm["bold"]: _vc.set_text_props(weight="bold")
+                                if _vci==4 and _rm["pct"]:
+                                    _vc.set_text_props(color=_rm["pct"],weight="bold")
+                            _vc.get_text().set_ha("left" if _vci==1 else "center")
+                            _vc.get_text().set_wrap(True)
+                        _vpp.savefig(_fv,bbox_inches="tight",dpi=120)
+                        plt.close(_fv)
+                b_vill_pdf.seek(0)
+                del vil_fin,_vprows,_chunks,_ct2,_cc2; gc.collect()
 
-                    rn = 4    # current Excel row
-                    sno = 1   # serial number counter
-                    grand_a = grand_c = 0
-
-                    for vao_name, vao_grp in vil_fin.groupby("VAO_Name", sort=False):
-                        vao_a = int(vao_grp["GW_Assigned"].sum())
-                        vao_c = int(vao_grp["GW_Done"].sum())
-                        vao_p = (vao_c / vao_a) if vao_a > 0 else (1.0 if vao_c > 0 else 0.0)
-
-                        # VAO header row (spans S.No col blank, then name, then totals)
-                        vws.write(rn, 0, "", v_vao_c)
-                        vws.write(rn, 1, vao_name, v_vao)
-                        vws.write(rn, 2, f"[{len(vao_grp)} villages]", v_vao)
-                        vws.write(rn, 3, vao_a, v_vao_c)
-                        vws.write(rn, 4, vao_c, v_vao_c)
-                        vws.write(rn, 5, vao_p, v_vao_p)
-                        rn += 1
-
-                        # Village rows
-                        for _, vrow in vao_grp.iterrows():
-                            va_ = int(vrow["GW_Assigned"])
-                            vc_ = int(vrow["GW_Done"])
-                            vp_ = float(vrow["Pct_v"])
-                            good = vp_ > 0.25 or (va_ == 0 and vc_ > 0)
-                            vws.write(rn, 0, sno,            v_body_c)
-                            vws.write(rn, 1, "",             v_body_c)
-                            vws.write(rn, 2, vrow["Village"], v_body)
-                            vws.write(rn, 3, va_,            v_body_c)
-                            vws.write(rn, 4, vc_,            v_body_c)
-                            vws.write(rn, 5, vp_,            v_green if good else v_red)
-                            rn += 1; sno += 1
-
-                        # VAO sub-total row
-                        vws.write(rn, 0, "",                         v_sub_c)
-                        vws.write(rn, 1, f"Sub-Total — {vao_name}",  v_sub)
-                        vws.write(rn, 2, "",                         v_sub_c)
-                        vws.write(rn, 3, vao_a,                      v_sub_c)
-                        vws.write(rn, 4, vao_c,                      v_sub_c)
-                        vws.write(rn, 5, vao_p,                      v_sub_p)
-                        rn += 1
-                        grand_a += vao_a; grand_c += vao_c
-
-                    # Grand Total row
-                    grand_p = (grand_c / grand_a) if grand_a > 0 else 0.0
-                    vws.write(rn, 0, "",           v_tot_c)
-                    vws.write(rn, 1, "Grand Total", v_tot)
-                    vws.write(rn, 2, "",           v_tot_c)
-                    vws.write(rn, 3, grand_a,      v_tot_c)
-                    vws.write(rn, 4, grand_c,      v_tot_c)
-                    vws.write(rn, 5, grand_p,      v_tot_p)
-
-                    del vil_fin; gc.collect()
-                b_vill.seek(0)
             except Exception as ve:
-                logger.error("Village Excel generation failed: %s", ve)
-                b_vill = None
+                logger.error("Village report generation failed: %s", ve, exc_info=True)
+                b_vill_xl = b_vill_pdf = None
 
         # ── Status Card ──────────────────────────────────────────────
         card = [["Total No. of Villages",total_v],["No. of Completed Villages",comp_v],
@@ -786,7 +878,9 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
 
         del p; gc.collect(); plt.close("all")
         logger.info("Report OK: %s", taluk)
-        return {"x":b_xl,"v":b_vill,"c":b_card,"g":b_g,"metrics":metrics}
+        return {"x_xl": b_xl, "x_pdf": b_xl_pdf,
+                "v_xl": b_vill_xl, "v_pdf": b_vill_pdf,
+                "c": b_card, "g": b_g, "metrics": metrics}
 
     except ValueError as e: raise RuntimeError(str(e)) from None
     except Exception as e:
@@ -1136,6 +1230,9 @@ def main():
     if st.session_state.get("report_data"):
         d=st.session_state["report_data"]
         st.success("✅ Reports Generated"); st.markdown("---")
+        _XLSX_MIME="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        _PDF_MIME ="application/pdf"
+
         # ── 1. Progress Graph ─────────────────────────────────────────
         c1,c2=st.columns([.7,.3])
         with c1:
@@ -1148,33 +1245,48 @@ def main():
                                use_container_width=True,type="primary")
         st.image(d["g"],use_container_width=True)
         st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
-        # ── 2. VAO-wise Summary Excel ─────────────────────────────────
+
+        # ── 2. VAO-wise Summary ───────────────────────────────────────
         c1,c2=st.columns([.7,.3])
         with c1:
             st.markdown('<p class="section-header">2. VAO wise Summary</p>'
                         '<p class="section-sub">VAO-wise Assigned vs Completed GW schedules.</p>',
                         unsafe_allow_html=True)
         with c2:
-            st.download_button("📥 Download VAO wise Progress Report",d["x"],
-                               "VAO_Summary_Report.xlsx",
-                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                               use_container_width=True,type="primary")
+            b1,b2=st.columns(2)
+            with b1:
+                st.download_button("📥 Excel",d["x_xl"],
+                                   "VAO_Summary_Report.xlsx",_XLSX_MIME,
+                                   use_container_width=True,type="primary")
+            with b2:
+                st.download_button("📄 PDF",d["x_pdf"],
+                                   "VAO_Summary_Report.pdf",_PDF_MIME,
+                                   use_container_width=True,type="primary")
         st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
-        # ── 3. Village-wise Report Excel ──────────────────────────────
+
+        # ── 3. Village-wise Report ────────────────────────────────────
         c1,c2=st.columns([.7,.3])
         with c1:
             st.markdown('<p class="section-header">3. VAO and Village wise Progress Report</p>'
                         '<p class="section-sub">VAO-wise village breakdown — Assigned vs Completed GW schedules.</p>',
                         unsafe_allow_html=True)
         with c2:
-            if d.get("v"):
-                st.download_button("📥 Download VAO and Village wise Progress Report",d["v"],
-                                   "Village_Wise_Report.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                   use_container_width=True,type="primary")
+            if d.get("v_xl") or d.get("v_pdf"):
+                b1,b2=st.columns(2)
+                with b1:
+                    if d.get("v_xl"):
+                        st.download_button("📥 Excel",d["v_xl"],
+                                           "Village_Wise_Report.xlsx",_XLSX_MIME,
+                                           use_container_width=True,type="primary")
+                with b2:
+                    if d.get("v_pdf"):
+                        st.download_button("📄 PDF",d["v_pdf"],
+                                           "Village_Wise_Report.pdf",_PDF_MIME,
+                                           use_container_width=True,type="primary")
             else:
                 st.caption("⚠️ Village column not detected in files.")
         st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
+
         # ── 4. Taluk Status Card ──────────────────────────────────────
         c1,c2=st.columns([.7,.3])
         with c1:
