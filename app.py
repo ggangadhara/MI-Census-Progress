@@ -16,16 +16,6 @@ from matplotlib.patches import Patch
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List, Tuple
 
-# ── ReportLab (PDF generation) ───────────────────────────────────────
-from reportlab.lib.pagesizes import A4, landscape as rl_landscape
-from reportlab.lib import colors as rl_colors
-from reportlab.lib.units import mm
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
-                                 Paragraph, Spacer)
-from reportlab.platypus.flowables import KeepInFrame, KeepTogether
-
 import gspread
 try:
     from google.oauth2.service_account import Credentials
@@ -599,6 +589,19 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                      f"wrt 6th Minor Irrigation Census upto 2018-19.\n(Generated on: {ts})")
 
         # ── VAO-wise PDF (A4 landscape, auto-scaled to ONE page) ─────
+        try:
+            from reportlab.lib.pagesizes import A4, landscape as rl_landscape
+            from reportlab.lib import colors as rl_colors
+            from reportlab.lib.units import mm
+            from reportlab.lib.styles import ParagraphStyle
+            from reportlab.lib.enums import TA_CENTER
+            from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
+                                            Paragraph, Spacer)
+            from reportlab.platypus.flowables import KeepInFrame
+        except ImportError:
+            raise RuntimeError(
+                "reportlab is not installed. Add 'reportlab>=4.0.0' to requirements.txt and redeploy."
+            )
         _PW, _PH = rl_landscape(A4)          # 841.89 × 595.28 pt
         _M  = 12 * mm                         # 12 mm margin all sides
         _UW = _PW - 2 * _M                    # usable width  ≈ 769 pt
