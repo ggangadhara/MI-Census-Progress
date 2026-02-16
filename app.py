@@ -588,252 +588,144 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         title_txt = (f"{taluk}: VAO wise progress of Ground Water Schemes (tube well) census "
                      f"wrt 6th Minor Irrigation Census upto 2018-19.\n(Generated on: {ts})")
 
-        # ── VAO-wise PDF (A4 landscape, auto-scaled to ONE page) ─────
-        try:
-            from reportlab.lib.pagesizes import A4, landscape as rl_landscape
-            from reportlab.lib import colors as rl_colors
-            from reportlab.lib.units import mm
-            from reportlab.lib.styles import ParagraphStyle
-            from reportlab.lib.enums import TA_CENTER
-            from reportlab.platypus import (SimpleDocTemplate, Table, TableStyle,
-                                            Paragraph, Spacer)
-            from reportlab.platypus.flowables import KeepInFrame
-        except ImportError:
-            raise RuntimeError(
-                "reportlab is not installed. Add 'reportlab>=4.0.0' to requirements.txt and redeploy."
-            )
-        _PW, _PH = rl_landscape(A4)          # 841.89 × 595.28 pt
-        _M  = 12 * mm                         # 12 mm margin all sides
-        _UW = _PW - 2 * _M                    # usable width  ≈ 769 pt
-        _UH = _PH - 2 * _M                    # usable height ≈ 524 pt
-
-        # Shared styles
-        _sty_title = ParagraphStyle('vao_title', fontSize=10,
-            fontName='Helvetica-Bold', alignment=TA_CENTER, leading=14,
-            spaceAfter=4, textColor=rl_colors.HexColor('#202124'))
-        _sty_gen = ParagraphStyle('vao_gen', fontSize=7,
-            fontName='Helvetica', alignment=TA_CENTER, leading=9,
-            textColor=rl_colors.HexColor('#5f6368'))
-
-        # Build table rows + per-cell style commands
-        _hdr = ['S. No.', 'VAO Full Name',
-                'GW Assigned\n(6th MI Census)',
-                'GW Completed\n(7th MI Census)', '% Completed']
-        _rows = [_hdr]
-        _sc = [  # base style commands
-            ('BACKGROUND',  (0, 0), (-1, 0), rl_colors.HexColor('#D3D3D3')),
-            ('FONTNAME',    (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE',    (0, 0), (-1,-1), 8),
-            ('LEADING',     (0, 0), (-1,-1), 10),
-            ('ALIGN',       (0, 0), ( 0,-1), 'CENTER'),
-            ('ALIGN',       (1, 0), ( 1,-1), 'LEFT'),
-            ('ALIGN',       (2, 0), (-1,-1), 'CENTER'),
-            ('VALIGN',      (0, 0), (-1,-1), 'MIDDLE'),
-            ('GRID',        (0, 0), (-1,-1), 0.3, rl_colors.HexColor('#BDBDBD')),
-            ('LINEBELOW',   (0, 0), (-1, 0), 0.8, rl_colors.HexColor('#9E9E9E')),
-            ('ROWHEIGHT',   (0, 0), (-1,-1), 11),
-            ('TOPPADDING',  (0, 0), (-1,-1), 2),
-            ('BOTTOMPADDING',(0,0), (-1,-1), 2),
-            ('LEFTPADDING', (0, 0), (-1,-1), 3),
-            ('RIGHTPADDING',(0, 0), (-1,-1), 3),
-        ]
-        _vao_rows = fin[["S.No","Name","Assigned","Completed","Pct"]].copy()
-        for _ri, _r in enumerate(_vao_rows.itertuples(), 1):
-            _pct = float(_r.Pct)
-            _good = _pct > 0.25 or (float(_r.Assigned) == 0 and float(_r.Completed) > 0)
-            _rows.append([
-                str(int(_r._1)) if pd.notna(_r._1) else '',
-                str(_r.Name),
-                str(int(_r.Assigned)),
-                str(int(_r.Completed)),
-                f"{_pct*100:.1f}%",
-            ])
-            _bg = rl_colors.white if _ri % 2 == 1 else rl_colors.HexColor('#F8F9FA')
-            _sc.append(('BACKGROUND', (0, _ri), (-1, _ri), _bg))
-            _sc.append(('BACKGROUND', (4, _ri), (4, _ri),
-                        rl_colors.HexColor('#C6EFCE') if _good else rl_colors.HexColor('#FFC7CE')))
-            _sc.append(('TEXTCOLOR', (4, _ri), (4, _ri),
-                        rl_colors.HexColor('#006100') if _good else rl_colors.HexColor('#9C0006')))
-            _sc.append(('FONTNAME', (4, _ri), (4, _ri), 'Helvetica-Bold'))
-
-        # Grand total row
-        _gt = len(_rows)
-        _rows.append(['', 'Grand Total', str(int(tot_a)), str(int(tot_c)), f"{prog*100:.1f}%"])
-        _sc += [
-            ('BACKGROUND', (0, _gt), (-1, _gt), rl_colors.HexColor('#F2F2F2')),
-            ('FONTNAME',   (0, _gt), (-1, _gt), 'Helvetica-Bold'),
-            ('LINEABOVE',  (0, _gt), (-1, _gt), 0.8, rl_colors.HexColor('#757575')),
-        ]
-
-        # Column widths (proportional, sum = _UW)
-        _cw = [_UW * p for p in [0.05, 0.42, 0.17, 0.18, 0.16]]
-        _tbl = Table(_rows, colWidths=_cw, repeatRows=1)
-        _tbl.setStyle(TableStyle(_sc))
-
-        # Title + table, shrink-wrapped into one page
-        _title_line = title_txt.split('\n')[0]
-        _gen_line   = title_txt.split('\n')[1] if '\n' in title_txt else ''
-        _title_para = Paragraph(_title_line, _sty_title)
-        _gen_para   = Paragraph(_gen_line, _sty_gen)
-        _title_h    = 35   # pt reserved for title block
-        _kif = KeepInFrame(_UW, _UH - _title_h, [_tbl], mode='shrink')
-
+        # ── Excel ────────────────────────────────────────────────────
         b_xl = io.BytesIO()
-        SimpleDocTemplate(b_xl, pagesize=rl_landscape(A4),
-            leftMargin=_M, rightMargin=_M, topMargin=_M, bottomMargin=_M
-        ).build([_title_para, _gen_para, Spacer(1, 4), _kif])
-        b_xl.seek(0)
-        del _rows, _sc, _vao_rows; gc.collect()
+        with pd.ExcelWriter(b_xl, engine="xlsxwriter") as wr:
+            out = fin[["S.No","Name","Assigned","Completed","Pct"]].copy()
+            out.columns = ["S. No.","VAO Full Name","Assigned","Completed","% Completed"]
+            out.loc[len(out)] = [None,"Grand Total",tot_a,tot_c,prog]
+            out.to_excel(wr, index=False, startrow=3, sheet_name="Report")
+            wb2=wr.book; ws2=wr.sheets["Report"]
+            F=lambda **k: wb2.add_format(k)
+            ft = F(bold=True,font_size=14,align="center",valign="vcenter",text_wrap=True,border=1,bg_color="#D3D3D3")
+            fh = F(bold=True,border=1,align="center",valign="vcenter",bg_color="#E0E0E0",text_wrap=True)
+            fb = F(border=1,align="center",valign="vcenter",text_wrap=True)
+            fg = F(bg_color="#C6EFCE",font_color="#006100",border=1,num_format="0.0%",align="center")
+            fr = F(bg_color="#FFC7CE",font_color="#9C0006",border=1,num_format="0.0%",align="center")
+            fp_= F(bold=True,border=1,align="center",bg_color="#F2F2F2",num_format="0.0%")
+            ft2= F(bold=True,border=1,align="center",bg_color="#F2F2F2")
+            ws2.merge_range("A1:E3",title_txt,ft)
+            for ci,cn in enumerate(out.columns): ws2.write(3,ci,cn,fh)
+            for ri,row in enumerate(out.values):
+                rn=4+ri; last=ri==len(out)-1
+                for ci,v in enumerate(row):
+                    if last: ws2.write(rn,ci,v,fp_ if ci==4 else ft2)
+                    elif ci==4: ws2.write(rn,ci,v,fg if (v>0.25 or (row[2]==0 and row[3]>0)) else fr)
+                    else: ws2.write(rn,ci,v,fb)
+            ws2.set_column(0,0,8); ws2.set_column(1,1,35); ws2.set_column(2,4,15)
+        b_xl.seek(0); del out; gc.collect()
 
-        # ── Village-wise PDF (A4 landscape, columns fit to width) ────
+        # ── Village-wise Excel ────────────────────────────────────────
         b_vill = None
         if have_village_data:
             try:
-                vill_title_line = (f"{taluk}: VAO & Village wise GW Schedules — "
-                                   f"Assigned (6th MI Census) vs Completed (7th MI Census)")
-
-                # Column widths: S.No | VAO Name | Village Name | Assigned | Completed | %
-                _vw = [_UW * p for p in [0.04, 0.26, 0.36, 0.11, 0.12, 0.10]]
-
-                # Shared cell style
-                _v_base = [
-                    ('FONTSIZE',      (0, 0), (-1,-1), 8),
-                    ('LEADING',       (0, 0), (-1,-1), 10),
-                    ('VALIGN',        (0, 0), (-1,-1), 'MIDDLE'),
-                    ('GRID',          (0, 0), (-1,-1), 0.25, rl_colors.HexColor('#BDBDBD')),
-                    ('TOPPADDING',    (0, 0), (-1,-1), 2),
-                    ('BOTTOMPADDING', (0, 0), (-1,-1), 2),
-                    ('LEFTPADDING',   (0, 0), (-1,-1), 3),
-                    ('RIGHTPADDING',  (0, 0), (-1,-1), 3),
-                ]
-
-                # Styles for different row types
-                def _vstyle(extra): return TableStyle(_v_base + extra)
-
-                _hdr_row = [['S. No.', 'VAO Full Name', 'Village Name',
-                              'GW Assigned\n(6th MI Census)',
-                              'GW Completed\n(7th MI Census)', '% Completed']]
-                _hdr_sty = [
-                    ('BACKGROUND',  (0,0), (-1,0), rl_colors.HexColor('#D3D3D3')),
-                    ('FONTNAME',    (0,0), (-1,0), 'Helvetica-Bold'),
-                    ('ALIGN',       (0,0), (-1,0), 'CENTER'),
-                    ('LINEBELOW',   (0,0), (-1,0), 0.8, rl_colors.HexColor('#9E9E9E')),
-                    ('ROWHEIGHT',   (0,0), (-1,0), 22),
-                    ('TOPPADDING',  (0,0), (-1,0), 3),
-                    ('BOTTOMPADDING',(0,0),(-1,0), 3),
-                ]
-
-                # Build VAO groups as KeepTogether blocks
-                _story_v = []
-                _sno = 1
-                _grand_a = _grand_c = 0
-
-                _sty_vtitle = ParagraphStyle('vtitle2', fontSize=10,
-                    fontName='Helvetica-Bold', alignment=TA_CENTER, leading=14,
-                    spaceAfter=2, textColor=rl_colors.HexColor('#202124'))
-                _sty_vgen = ParagraphStyle('vgen2', fontSize=7,
-                    fontName='Helvetica', alignment=TA_CENTER, leading=9,
-                    spaceAfter=4, textColor=rl_colors.HexColor('#5f6368'))
-
-                # Page header
-                _story_v += [
-                    Paragraph(vill_title_line, _sty_vtitle),
-                    Paragraph(f"Generated on: {ts}", _sty_vgen),
-                ]
-
-                # Global header row (repeated via Table repeatRows on each page)
-                # We build ONE big table for the whole report with repeatRows=1
-                _all_rows  = [_hdr_row[0]]
-                _all_sty   = (list(_v_base) + _hdr_sty)
-                _row_idx   = 1   # current table row index (0 = header)
-
-                for _vao_name, _vao_grp in vil_fin.groupby("VAO_Name", sort=False):
-                    _vao_a = int(_vao_grp["GW_Assigned"].sum())
-                    _vao_c = int(_vao_grp["GW_Done"].sum())
-                    _vao_p = (_vao_c / _vao_a) if _vao_a > 0 else (1.0 if _vao_c > 0 else 0.0)
-
-                    # VAO header row (light blue)
-                    _all_rows.append([
-                        '', _vao_name,
-                        f"[{len(_vao_grp)} villages]",
-                        str(_vao_a), str(_vao_c),
-                        f"{_vao_p*100:.1f}%"
-                    ])
-                    _all_sty += [
-                        ('BACKGROUND',  (0, _row_idx), (-1, _row_idx), rl_colors.HexColor('#C9DAF8')),
-                        ('FONTNAME',    (0, _row_idx), (-1, _row_idx), 'Helvetica-Bold'),
-                        ('ALIGN',       (0, _row_idx), ( 0, _row_idx), 'CENTER'),
-                        ('ALIGN',       (1, _row_idx), ( 2, _row_idx), 'LEFT'),
-                        ('ALIGN',       (3, _row_idx), (-1, _row_idx), 'CENTER'),
-                        ('LINEABOVE',   (0, _row_idx), (-1, _row_idx), 0.5, rl_colors.HexColor('#7BAFD4')),
-                    ]
-                    _row_idx += 1
-
-                    # Village rows
-                    for _, _vr in _vao_grp.iterrows():
-                        _va = int(_vr["GW_Assigned"]); _vc = int(_vr["GW_Done"])
-                        _vp = float(_vr["Pct_v"])
-                        _good = _vp > 0.25 or (_va == 0 and _vc > 0)
-                        _all_rows.append([
-                            str(_sno), '',
-                            str(_vr["Village"]),
-                            str(_va), str(_vc),
-                            f"{_vp*100:.1f}%"
-                        ])
-                        _alt_bg = rl_colors.white if _sno % 2 == 1 else rl_colors.HexColor('#F8F9FA')
-                        _all_sty += [
-                            ('BACKGROUND', (0, _row_idx), (-1, _row_idx), _alt_bg),
-                            ('ALIGN',      (0, _row_idx), ( 0, _row_idx), 'CENTER'),
-                            ('ALIGN',      (2, _row_idx), ( 2, _row_idx), 'LEFT'),
-                            ('ALIGN',      (3, _row_idx), (-1, _row_idx), 'CENTER'),
-                            ('BACKGROUND', (5, _row_idx), (5, _row_idx),
-                             rl_colors.HexColor('#C6EFCE') if _good else rl_colors.HexColor('#FFC7CE')),
-                            ('TEXTCOLOR',  (5, _row_idx), (5, _row_idx),
-                             rl_colors.HexColor('#006100') if _good else rl_colors.HexColor('#9C0006')),
-                            ('FONTNAME',   (5, _row_idx), (5, _row_idx), 'Helvetica-Bold'),
-                        ]
-                        _sno += 1; _row_idx += 1
-
-                    # Sub-total row (yellow)
-                    _all_rows.append(['', f"Sub-Total — {_vao_name}", '',
-                                      str(_vao_a), str(_vao_c), f"{_vao_p*100:.1f}%"])
-                    _all_sty += [
-                        ('BACKGROUND', (0, _row_idx), (-1, _row_idx), rl_colors.HexColor('#FFF2CC')),
-                        ('FONTNAME',   (0, _row_idx), (-1, _row_idx), 'Helvetica-Bold'),
-                        ('ALIGN',      (0, _row_idx), ( 0, _row_idx), 'CENTER'),
-                        ('ALIGN',      (1, _row_idx), ( 2, _row_idx), 'LEFT'),
-                        ('ALIGN',      (3, _row_idx), (-1, _row_idx), 'CENTER'),
-                        ('LINEABOVE',  (0, _row_idx), (-1, _row_idx), 0.4, rl_colors.HexColor('#C8A900')),
-                        ('LINEBELOW',  (0, _row_idx), (-1, _row_idx), 0.6, rl_colors.HexColor('#C8A900')),
-                    ]
-                    _grand_a += _vao_a; _grand_c += _vao_c
-                    _row_idx += 1
-
-                # Grand total row (grey)
-                _grand_p = (_grand_c / _grand_a) if _grand_a > 0 else 0.0
-                _all_rows.append(['', 'Grand Total', '',
-                                   str(_grand_a), str(_grand_c), f"{_grand_p*100:.1f}%"])
-                _all_sty += [
-                    ('BACKGROUND', (0, _row_idx), (-1, _row_idx), rl_colors.HexColor('#E8EAED')),
-                    ('FONTNAME',   (0, _row_idx), (-1, _row_idx), 'Helvetica-Bold'),
-                    ('ALIGN',      (0, _row_idx), ( 0, _row_idx), 'CENTER'),
-                    ('ALIGN',      (1, _row_idx), ( 2, _row_idx), 'LEFT'),
-                    ('ALIGN',      (3, _row_idx), (-1, _row_idx), 'CENTER'),
-                    ('LINEABOVE',  (0, _row_idx), (-1, _row_idx), 1.0, rl_colors.HexColor('#5f6368')),
-                ]
-
-                _big_tbl = Table(_all_rows, colWidths=_vw, repeatRows=1)
-                _big_tbl.setStyle(TableStyle(_all_sty))
-                _story_v.append(_big_tbl)
+                vill_title = (f"{taluk}: VAO & Village wise GW Schedules — "
+                              f"Assigned (6th MI Census) vs Completed (7th MI Census)\n(Generated on: {ts})")
 
                 b_vill = io.BytesIO()
-                SimpleDocTemplate(b_vill, pagesize=rl_landscape(A4),
-                    leftMargin=_M, rightMargin=_M, topMargin=_M, bottomMargin=_M
-                ).build(_story_v)
+                with pd.ExcelWriter(b_vill, engine="xlsxwriter") as vwr:
+                    vwb = vwr.book
+                    vws = vwb.add_worksheet("Village_Report")
+                    VF = lambda **k: vwb.add_format(k)
+                    # Formats
+                    v_title = VF(bold=True,font_size=13,align="center",valign="vcenter",
+                                 text_wrap=True,border=1,bg_color="#D3D3D3")
+                    v_hdr   = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#E0E0E0",text_wrap=True,font_size=10)
+                    v_vao   = VF(bold=True,border=1,align="left",valign="vcenter",
+                                 bg_color="#C9DAF8",font_size=10)   # light blue VAO header
+                    v_vao_c = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#C9DAF8",font_size=10)
+                    v_vao_p = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#C9DAF8",font_size=10,num_format="0.0%")
+                    v_sub   = VF(bold=True,border=1,align="left",valign="vcenter",
+                                 bg_color="#FFF2CC",font_size=10)   # yellow sub-total
+                    v_sub_c = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#FFF2CC",font_size=10)
+                    v_sub_p = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#FFF2CC",font_size=10,num_format="0.0%")
+                    v_body  = VF(border=1,align="left",valign="vcenter",font_size=10)
+                    v_body_c= VF(border=1,align="center",valign="vcenter",font_size=10)
+                    v_green = VF(bg_color="#C6EFCE",font_color="#006100",border=1,
+                                 num_format="0.0%",align="center",font_size=10)
+                    v_red   = VF(bg_color="#FFC7CE",font_color="#9C0006",border=1,
+                                 num_format="0.0%",align="center",font_size=10)
+                    v_tot   = VF(bold=True,border=1,align="left",valign="vcenter",
+                                 bg_color="#F2F2F2",font_size=10)
+                    v_tot_c = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#F2F2F2",font_size=10)
+                    v_tot_p = VF(bold=True,border=1,align="center",valign="vcenter",
+                                 bg_color="#F2F2F2",font_size=10,num_format="0.0%")
+
+                    # Column widths: S.No | VAO Name | Village Name | Assigned | Completed | %
+                    col_w = [6, 32, 30, 14, 14, 12]
+                    for ci, w in enumerate(col_w): vws.set_column(ci, ci, w)
+
+                    # Title (rows 0-2)
+                    vws.merge_range(0, 0, 2, 5, vill_title, v_title)
+                    vws.set_row(0, 40)
+
+                    # Header row 3
+                    hdrs = ["S. No.", "VAO Full Name", "Village Name",
+                            "GW Assigned\n(6th MI Census)", "GW Completed\n(7th MI Census)", "% Completed"]
+                    for ci, h in enumerate(hdrs): vws.write(3, ci, h, v_hdr)
+                    vws.set_row(3, 35)
+
+                    rn = 4    # current Excel row
+                    sno = 1   # serial number counter
+                    grand_a = grand_c = 0
+
+                    for vao_name, vao_grp in vil_fin.groupby("VAO_Name", sort=False):
+                        vao_a = int(vao_grp["GW_Assigned"].sum())
+                        vao_c = int(vao_grp["GW_Done"].sum())
+                        vao_p = (vao_c / vao_a) if vao_a > 0 else (1.0 if vao_c > 0 else 0.0)
+
+                        # VAO header row (spans S.No col blank, then name, then totals)
+                        vws.write(rn, 0, "", v_vao_c)
+                        vws.write(rn, 1, vao_name, v_vao)
+                        vws.write(rn, 2, f"[{len(vao_grp)} villages]", v_vao)
+                        vws.write(rn, 3, vao_a, v_vao_c)
+                        vws.write(rn, 4, vao_c, v_vao_c)
+                        vws.write(rn, 5, vao_p, v_vao_p)
+                        rn += 1
+
+                        # Village rows
+                        for _, vrow in vao_grp.iterrows():
+                            va_ = int(vrow["GW_Assigned"])
+                            vc_ = int(vrow["GW_Done"])
+                            vp_ = float(vrow["Pct_v"])
+                            good = vp_ > 0.25 or (va_ == 0 and vc_ > 0)
+                            vws.write(rn, 0, sno,            v_body_c)
+                            vws.write(rn, 1, "",             v_body_c)
+                            vws.write(rn, 2, vrow["Village"], v_body)
+                            vws.write(rn, 3, va_,            v_body_c)
+                            vws.write(rn, 4, vc_,            v_body_c)
+                            vws.write(rn, 5, vp_,            v_green if good else v_red)
+                            rn += 1; sno += 1
+
+                        # VAO sub-total row
+                        vws.write(rn, 0, "",                         v_sub_c)
+                        vws.write(rn, 1, f"Sub-Total — {vao_name}",  v_sub)
+                        vws.write(rn, 2, "",                         v_sub_c)
+                        vws.write(rn, 3, vao_a,                      v_sub_c)
+                        vws.write(rn, 4, vao_c,                      v_sub_c)
+                        vws.write(rn, 5, vao_p,                      v_sub_p)
+                        rn += 1
+                        grand_a += vao_a; grand_c += vao_c
+
+                    # Grand Total row
+                    grand_p = (grand_c / grand_a) if grand_a > 0 else 0.0
+                    vws.write(rn, 0, "",           v_tot_c)
+                    vws.write(rn, 1, "Grand Total", v_tot)
+                    vws.write(rn, 2, "",           v_tot_c)
+                    vws.write(rn, 3, grand_a,      v_tot_c)
+                    vws.write(rn, 4, grand_c,      v_tot_c)
+                    vws.write(rn, 5, grand_p,      v_tot_p)
+
+                    del vil_fin; gc.collect()
                 b_vill.seek(0)
-                del vil_fin, _all_rows, _all_sty, _story_v; gc.collect()
             except Exception as ve:
-                logger.error("Village PDF generation failed: %s", ve, exc_info=True)
+                logger.error("Village Excel generation failed: %s", ve)
                 b_vill = None
 
         # ── Status Card ──────────────────────────────────────────────
@@ -1264,8 +1156,8 @@ def main():
                         unsafe_allow_html=True)
         with c2:
             st.download_button("📥 Download VAO wise Progress Report",d["x"],
-                               "VAO_Summary_Report.pdf",
-                               mime="application/pdf",
+                               "VAO_Summary_Report.xlsx",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                use_container_width=True,type="primary")
         st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
         # ── 3. Village-wise Report Excel ──────────────────────────────
@@ -1277,8 +1169,8 @@ def main():
         with c2:
             if d.get("v"):
                 st.download_button("📥 Download VAO and Village wise Progress Report",d["v"],
-                                   "Village_Wise_Report.pdf",
-                                   mime="application/pdf",
+                                   "Village_Wise_Report.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                    use_container_width=True,type="primary")
             else:
                 st.caption("⚠️ Village column not detected in files.")
