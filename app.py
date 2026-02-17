@@ -637,51 +637,81 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         b_xl.seek(0)
         del out; gc.collect()
 
-        # ── 1b. VAO PDF (A4 portrait, auto-fit, text-wrap) ───────────
+        # ── 1b. VAO PDF  (A4 portrait · 2-line title · no gap · classy) ─
         _vao_df = fin[["S.No","Name","Assigned","Completed","Pct"]].copy()
         _vao_df.loc[len(_vao_df)] = [None,"Grand Total",tot_a,tot_c,prog]
-        _nr     = len(_vao_df)
-        _fp     = max(6, min(9, int(480 / (_nr + 2))))   # auto font size
-        _rh     = max(0.015, 0.82 / _nr)                  # auto row height
-        _ct, _cc = [], []
+        _nr    = len(_vao_df)
+        # Auto-fit name column: scale from longest name, clamped 0.40–0.58
+        _nm_w  = min(0.58, max(0.40, max(len(str(n)) for n in _vao_df["Name"]) * 0.012))
+        _rem   = 1.0 - _nm_w - 0.07
+        _cw_vao= [0.07, _nm_w, round(_rem/3,3), round(_rem/3,3), round(_rem/3+0.001,3)]
+        _fp    = max(6, min(9, int(460 / (_nr + 2))))
+        _hdr_h = 0.052; _avail = 0.86
+        _rh    = (_avail - _hdr_h) / _nr       # uniform row height
+
+        _ct, _cc, _pmeta = [], [], []
         for _, _r in _vao_df.iterrows():
-            _p   = float(_r["Pct"]); _gt = pd.isna(_r["S.No"])
-            _gd  = _p>0.25 or (float(_r["Assigned"])==0 and float(_r["Completed"])>0)
+            _p  = float(_r["Pct"]); _gt = pd.isna(_r["S.No"])
+            _gd = _p > 0.25 or (float(_r["Assigned"]) == 0 and float(_r["Completed"]) > 0)
             _ct.append(["" if _gt else str(int(_r["S.No"])), str(_r["Name"]),
                         str(int(_r["Assigned"])), str(int(_r["Completed"])), f"{_p*100:.1f}%"])
-            _alt = "#F2F2F2" if _gt else ("#FFFFFF" if len(_ct)%2==1 else "#F8F9FA")
-            _cc.append([_alt,_alt,_alt,_alt,"#C6EFCE" if _gd else "#FFC7CE"])
+            if _gt:   _cc.append(["#1C2833"]*5)
+            else:
+                _alt = "#FFFFFF" if len(_ct)%2==1 else "#EEF4FB"
+                _cc.append([_alt,_alt,_alt,_alt,"#C6EFCE" if _gd else "#FFC7CE"])
+            _pmeta.append((_gt, _gd))
 
         _fig_vp, _ax_vp = plt.subplots(figsize=_A4P)
         _ax_vp.axis("off")
-        _ax_vp.set_title(title_txt, fontsize=9, fontweight="bold",
-                         loc="center", pad=8, color="#202124", wrap=True)
-        _tv = _ax_vp.table(
-            cellText=_ct, colLabels=["S.No","VAO Full Name","Assigned","Completed","% Done"],
-            cellColours=_cc, colWidths=[0.06,0.44,0.16,0.18,0.14],
-            loc="center", bbox=[0,0,1,0.93])
+        _ax_vp.set_position([0.03, 0.02, 0.94, _avail])   # table axes
+        # 2-line title on figure canvas — sits directly above accent bar, zero gap
+        _tp = title_txt.split("\n")
+        _fig_vp.text(0.5, 0.999, textwrap.fill(_tp[0], width=68),
+                     ha="center", va="top", fontsize=9, fontweight="bold",
+                     color="#1C2833", multialignment="center",
+                     transform=_fig_vp.transFigure)
+        _fig_vp.text(0.5, 0.956, _tp[1] if len(_tp) > 1 else "",
+                     ha="center", va="top", fontsize=7.5, color="#5f6368",
+                     style="italic", transform=_fig_vp.transFigure)
+        _bar = _fig_vp.add_axes([0.03, 0.878, 0.94, 0.004])
+        _bar.set_facecolor("#1565C0"); _bar.axis("off")    # accent line
+
+        _tv = _ax_vp.table(cellText=_ct,
+            colLabels=["S.No","VAO Full Name","Assigned","Completed","% Done"],
+            cellColours=_cc, colWidths=_cw_vao,
+            loc="upper center", bbox=[0, 0, 1, 1])
         _tv.auto_set_font_size(False); _tv.set_fontsize(_fp)
-        for (_ri,_ci),_c in _tv.get_celld().items():
-            _c.set_edgecolor("#BDBDBD"); _c.set_linewidth(0.3)
-            if _ri==0:
-                _c.set_facecolor("#D3D3D3"); _c.set_text_props(weight="bold",fontsize=_fp)
-                _c.set_height(0.045)
+
+        for (_ri, _ci), _c in _tv.get_celld().items():
+            if _ri == 0:                                   # header row
+                _c.set_facecolor("#1565C0")
+                _c.set_text_props(weight="bold", fontsize=_fp+0.5, color="white")
+                _c.set_edgecolor("#0D47A1"); _c.set_linewidth(0.6)
+                _c.set_height(_hdr_h)
             else:
-                _row = _vao_df.iloc[_ri-1]
-                _c.set_height(_rh)
-                if pd.isna(_row["S.No"]): _c.set_text_props(weight="bold")
-                if _ci==4 and not pd.isna(_row["S.No"]):
-                    _p2=float(_row["Pct"]); _gd2=_p2>0.25 or (float(_row["Assigned"])==0 and float(_row["Completed"])>0)
-                    _c.set_text_props(color="#006100" if _gd2 else "#9C0006",weight="bold")
-            _c.get_text().set_ha("left" if _ci==1 else "center")
+                _gt_r, _gd_r = _pmeta[_ri - 1]
+                _c.set_height(_rh); _c.PAD = 0.10
+                if _gt_r:                                  # Grand Total — dark navy
+                    _c.set_facecolor("#1C2833")
+                    _c.set_text_props(weight="bold", fontsize=_fp+0.5, color="white")
+                    _c.set_edgecolor("#0D1B2A"); _c.set_linewidth(0.8)
+                else:
+                    _c.set_edgecolor("#D6E0EE"); _c.set_linewidth(0.25)
+                    if _ci == 4:                           # % column — conditional colour
+                        _c.set_text_props(
+                            color="#006100" if _gd_r else "#9C0006",
+                            weight="bold", fontsize=_fp)
+                    if _ri % 5 == 0:                       # subtle group separator
+                        _c.set_linewidth(0.6)
+            _c.get_text().set_ha("left" if _ci == 1 else "center")
             _c.get_text().set_wrap(True)
 
         b_xl_pdf = io.BytesIO()
         with PdfPages(b_xl_pdf) as _pp:
-            _pp.savefig(_fig_vp, bbox_inches="tight", dpi=120)
+            _pp.savefig(_fig_vp, dpi=150)
         plt.close(_fig_vp)
         b_xl_pdf.seek(0)
-        del _vao_df,_ct,_cc; gc.collect()
+        del _vao_df, _ct, _cc, _pmeta; gc.collect()
 
         # ── 2a. Village Excel (xlsxwriter, previous style) ───────────
         b_vill_xl = None; b_vill_pdf = None
@@ -743,78 +773,182 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                 b_vill_xl.seek(0)
                 gc.collect()
 
-                # ── 2b. Village PDF (A4 portrait, paginated, 38 rows/page) ──
-                _VPP   = 38                    # village rows per page body
-                _vpcols = ["S.No","VAO / Village","Assigned","Completed","%"]
-                _vpcw   = [0.05, 0.55, 0.13, 0.14, 0.11]
-                _vpfont = max(6, min(8, int(400/(_VPP+2))))
-                _vprh   = max(0.014, 0.82/_VPP)
+                # ── 2b. Village PDF  (A4 portrait · uniform rows · no gap) ──
+                _VPP    = 38
+                _vpcols = ["S. No.","VAO Full Name\nVillage Name",
+                          "GW Assigned\n(6th MI Census)","GW Completed\n(7th MI Census)","% Completed"]
+                _vpcw   = [0.06, 0.47, 0.16, 0.16, 0.13]
+                _vpfont = max(6, min(8, int(400 / (_VPP + 2))))
+                _hdr_hv = 0.058               # Taller header for wrapped column labels
+                _vprh   = (0.80 - _hdr_hv) / _VPP   # Adjusted for page 1 title spacing
 
-                # Build flat row list once (memory-efficient)
+                # Build flat row list once
                 _vprows: List[Dict] = []
                 _vpsno = 1; _vpga = _vpgc = 0
-                for vao_nm,vao_grp in vil_fin.groupby("VAO_Name",sort=False):
-                    va_a=int(vao_grp["GW_Assigned"].sum()); va_c=int(vao_grp["GW_Done"].sum())
-                    va_p=(va_c/va_a) if va_a>0 else (1.0 if va_c>0 else 0.0)
-                    _vprows.append({"t":["",f"{vao_nm}  [{len(vao_grp)} vil.]",
-                                         str(va_a),str(va_c),f"{va_p*100:.1f}%"],
-                                    "bg":["#C9DAF8"]*5,"bold":True,"pct":None})
-                    for _,vrow in vao_grp.iterrows():
+                for vao_nm, vao_grp in vil_fin.groupby("VAO_Name", sort=False):
+                    va_a = int(vao_grp["GW_Assigned"].sum())
+                    va_c = int(vao_grp["GW_Done"].sum())
+                    va_p = (va_c / va_a) if va_a > 0 else (1.0 if va_c > 0 else 0.0)
+                    _vgd = va_p > 0.25 or (va_a == 0 and va_c > 0)
+                    # VAO header (blue)
+                    _vprows.append({"t": ["", f"{vao_nm}  [{len(vao_grp)} villages]",
+                                          str(va_a), str(va_c), f"{va_p*100:.1f}%"],
+                                    "bg": ["#C9DAF8"]*5, "bold": True,
+                                    "pct": None, "kind": "vao"})
+                    for _, vrow in vao_grp.iterrows():
                         vva=int(vrow["GW_Assigned"]); vvc=int(vrow["GW_Done"]); vvp=float(vrow["Pct_v"])
                         vgd=vvp>0.25 or (vva==0 and vvc>0)
                         _alt="#FFFFFF" if _vpsno%2==1 else "#EFF3FF"
-                        _vprows.append({"t":[str(_vpsno),str(vrow["Village"]),
-                                              str(vva),str(vvc),f"{vvp*100:.1f}%"],
-                                        "bg":[_alt,_alt,_alt,_alt,
-                                              "#C6EFCE" if vgd else "#FFC7CE"],
-                                        "bold":False,"pct":("#006100" if vgd else "#9C0006")})
-                        _vpsno+=1
-                    _vprows.append({"t":["",f"Sub-Total — {vao_nm}",
-                                          str(va_a),str(va_c),f"{va_p*100:.1f}%"],
-                                    "bg":["#FFF2CC"]*5,"bold":True,"pct":None})
-                    _vpga+=va_a; _vpgc+=va_c
-                _vpgp=(_vpgc/_vpga) if _vpga>0 else 0.0
-                _vprows.append({"t":["","Grand Total",str(_vpga),str(_vpgc),f"{_vpgp*100:.1f}%"],
-                                "bg":["#E8EAED"]*5,"bold":True,"pct":None})
+                        _vprows.append({"t": [str(_vpsno), str(vrow["Village"]),
+                                               str(vva), str(vvc), f"{vvp*100:.1f}%"],
+                                        "bg": [_alt]*4+["#C6EFCE" if vgd else "#FFC7CE"],
+                                        "bold": False,
+                                        "pct": "#006100" if vgd else "#9C0006",
+                                        "kind": "village"})
+                        _vpsno += 1
+                    # Subtotal — yellow bg + conditional green/red % cell
+                    _vprows.append({"t": ["", f"Sub-Total — {vao_nm}",
+                                          str(va_a), str(va_c), f"{va_p*100:.1f}%"],
+                                    "bg": ["#FFF2CC"]*4+["#C6EFCE" if _vgd else "#FFC7CE"],
+                                    "bold": True,
+                                    "pct": "#006100" if _vgd else "#9C0006",
+                                    "kind": "subtotal"})
+                    _vpga += va_a; _vpgc += va_c
+                _vpgp = (_vpgc/_vpga) if _vpga > 0 else 0.0
+                _vprows.append({"t": ["","Grand Total",str(_vpga),str(_vpgc),f"{_vpgp*100:.1f}%"],
+                                "bg": ["#1C2833"]*5, "bold": True,
+                                "pct": None, "kind": "grandtotal"})
 
                 _vptitle = (f"{taluk}: VAO & Village wise GW Schedules\n"
                             f"Assigned (6th MI Census) vs Completed (7th MI Census)\n"
                             f"Generated on: {ts}")
-                _chunks  = [_vprows[i:i+_VPP] for i in range(0,len(_vprows),_VPP)]
+                
+                # Smart chunking: keep each VAO's villages together on same page
+                def _smart_chunk(rows, max_rows):
+                    """Chunk rows keeping VAO groups intact (never split across pages)"""
+                    chunks = []
+                    current_page = []
+                    current_vao_group = []
+                    
+                    for row in rows:
+                        if row["kind"] == "vao":
+                            # Start of new VAO — flush previous group if exists
+                            if current_vao_group:
+                                if len(current_page) + len(current_vao_group) <= max_rows:
+                                    current_page.extend(current_vao_group)
+                                else:
+                                    # Current page full — save it and start new page
+                                    if current_page:
+                                        chunks.append(current_page)
+                                    current_page = current_vao_group[:]
+                                current_vao_group = []
+                            current_vao_group.append(row)
+                        elif row["kind"] == "grandtotal":
+                            # End of data — flush final VAO group + grand total
+                            if current_vao_group:
+                                if len(current_page) + len(current_vao_group) <= max_rows:
+                                    current_page.extend(current_vao_group)
+                                else:
+                                    if current_page:
+                                        chunks.append(current_page)
+                                    current_page = current_vao_group[:]
+                            current_page.append(row)
+                            if current_page:
+                                chunks.append(current_page)
+                        else:
+                            # Village or subtotal — part of current VAO group
+                            current_vao_group.append(row)
+                    
+                    return chunks
+                
+                _chunks = _smart_chunk(_vprows, _VPP)
 
                 b_vill_pdf = io.BytesIO()
                 with PdfPages(b_vill_pdf) as _vpp:
-                    for _pg,_chunk in enumerate(_chunks):
-                        _fv,_av = plt.subplots(figsize=_A4P)
+                    for _pg, _chunk in enumerate(_chunks):
+                        _fv, _av = plt.subplots(figsize=_A4P)
                         _av.axis("off")
-                        _av.set_title(
-                            _vptitle + f"\n(Page {_pg+1} / {len(_chunks)})",
-                            fontsize=7.5, fontweight="bold", loc="center",
-                            pad=6, color="#202124")
-                        _ct2=[r["t"] for r in _chunk]
-                        _cc2=[r["bg"] for r in _chunk]
-                        _vtb=_av.table(cellText=_ct2,colLabels=_vpcols,
-                                       cellColours=_cc2,colWidths=_vpcw,
-                                       loc="center",bbox=[0,0,1,0.88])
+                        
+                        # Title ONLY on page 1 — with white space gap (no accent bar)
+                        if _pg == 0:
+                            _av.set_position([0.03, 0.01, 0.94, 0.80])  # Leave room at top for title
+                            _vtp = _vptitle.split("\n")
+                            # Title lines with spacing
+                            _fv.text(0.5, 0.970, _vtp[0], ha="center", va="top",
+                                     fontsize=9, fontweight="bold", color="#202124",
+                                     transform=_fv.transFigure)
+                            _fv.text(0.5, 0.945, _vtp[1], ha="center", va="top",
+                                     fontsize=7.5, color="#5f6368",
+                                     transform=_fv.transFigure)
+                            _fv.text(0.5, 0.925, f"({_vtp[2].strip()})",
+                                     ha="center", va="top", fontsize=7, color="#5f6368",
+                                     style="italic", transform=_fv.transFigure)
+                            # White space gap — no accent bar
+                        else:
+                            # Pages 2+ : table uses more vertical space
+                            _av.set_position([0.03, 0.01, 0.94, 0.86])
+                            # Page number at top
+                            _fv.text(0.5, 0.990, f"Page {_pg+1} / {len(_chunks)}",
+                                     ha="center", va="top", fontsize=8, color="#5f6368",
+                                     transform=_fv.transFigure)
+
+                        # Pad chunk to exactly _VPP rows (fixes uneven row heights on last page)
+                        _chunk_padded = _chunk[:]
+                        while len(_chunk_padded) < _VPP:
+                            _chunk_padded.append({
+                                "t": ["", "", "", "", ""],
+                                "bg": ["#FFFFFF"]*5,
+                                "bold": False, "pct": None, "kind": "padding"
+                            })
+
+                        _ct2 = [r["t"] for r in _chunk_padded]
+                        _cc2 = [r["bg"] for r in _chunk_padded]
+                        _vtb = _av.table(cellText=_ct2, colLabels=_vpcols,
+                                         cellColours=_cc2, colWidths=_vpcw,
+                                         loc="upper center", bbox=[0, 0, 1, 1])
                         _vtb.auto_set_font_size(False); _vtb.set_fontsize(_vpfont)
-                        for (_vri,_vci),_vc in _vtb.get_celld().items():
-                            _vc.set_edgecolor("#BDBDBD"); _vc.set_linewidth(0.25)
-                            if _vri==0:
-                                _vc.set_facecolor("#D3D3D3")
-                                _vc.set_text_props(weight="bold",fontsize=_vpfont)
-                                _vc.set_height(0.042)
+
+                        for (_vri, _vci), _vc in _vtb.get_celld().items():
+                            if _vri == 0:
+                                _vc.set_facecolor("#1565C0")
+                                _vc.set_text_props(weight="bold", fontsize=_vpfont+0.5,
+                                                   color="white")
+                                _vc.set_edgecolor("#0D47A1"); _vc.set_linewidth(0.6)
+                                _vc.set_height(_hdr_hv)
                             else:
-                                _rm=_chunk[_vri-1]
-                                _vc.set_height(_vprh)
-                                if _rm["bold"]: _vc.set_text_props(weight="bold")
-                                if _vci==4 and _rm["pct"]:
-                                    _vc.set_text_props(color=_rm["pct"],weight="bold")
-                            _vc.get_text().set_ha("left" if _vci==1 else "center")
+                                _rm = _chunk_padded[_vri - 1]
+                                _vc.set_height(_vprh)   # uniform for ALL rows, ALL pages
+                                _vc.PAD = 0.08
+                                
+                                if _rm["kind"] == "padding":
+                                    # Empty padding row — invisible borders
+                                    _vc.set_edgecolor("#FFFFFF"); _vc.set_linewidth(0)
+                                elif _rm["kind"] == "grandtotal":
+                                    _vc.set_facecolor("#1C2833")
+                                    _vc.set_text_props(weight="bold", fontsize=_vpfont+0.5,
+                                                       color="white")
+                                    _vc.set_edgecolor("#0D1B2A"); _vc.set_linewidth(0.8)
+                                elif _rm["kind"] == "vao":
+                                    _vc.set_edgecolor("#7BAFD4"); _vc.set_linewidth(0.5)
+                                    _vc.set_text_props(weight="bold", fontsize=_vpfont)
+                                elif _rm["kind"] == "subtotal":
+                                    _vc.set_edgecolor("#C8A900"); _vc.set_linewidth(0.5)
+                                    _vc.set_text_props(weight="bold", fontsize=_vpfont)
+                                    if _vci == 4 and _rm["pct"]:   # conditional % colour
+                                        _vc.set_text_props(color=_rm["pct"],
+                                                           weight="bold", fontsize=_vpfont)
+                                else:   # village row
+                                    _vc.set_edgecolor("#D6E0EE"); _vc.set_linewidth(0.2)
+                                    if _vci == 4 and _rm["pct"]:
+                                        _vc.set_text_props(color=_rm["pct"],
+                                                           weight="bold", fontsize=_vpfont)
+                            _vc.get_text().set_ha("left" if _vci == 1 else "center")
                             _vc.get_text().set_wrap(True)
-                        _vpp.savefig(_fv,bbox_inches="tight",dpi=120)
-                        plt.close(_fv)
+
+                        _vpp.savefig(_fv, dpi=150); plt.close(_fv)
+
                 b_vill_pdf.seek(0)
-                del vil_fin,_vprows,_chunks,_ct2,_cc2; gc.collect()
+                del vil_fin, _vprows, _chunks, _ct2, _cc2; gc.collect()
 
             except Exception as ve:
                 logger.error("Village report generation failed: %s", ve, exc_info=True)
