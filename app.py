@@ -768,10 +768,11 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                     for vao_nm,vao_grp in vil_fin.groupby("VAO_Name",sort=False):
                         va_a=int(vao_grp["GW_Assigned"].sum()); va_c=int(vao_grp["GW_Done"].sum())
                         va_p=(va_c/va_a) if va_a>0 else (1.0 if va_c>0 else 0.0)
+                        # VAO header: name + village count only, no totals
                         vws.write(rn,0,"",vf_vaoc); vws.write(rn,1,vao_nm,vf_vao)
                         vws.write(rn,2,f"[{len(vao_grp)} villages]",vf_vao)
-                        vws.write(rn,3,va_a,vf_vaoc); vws.write(rn,4,va_c,vf_vaoc)
-                        vws.write(rn,5,va_p,vf_vaop); rn+=1
+                        vws.write(rn,3,"",vf_vaoc); vws.write(rn,4,"",vf_vaoc)
+                        vws.write(rn,5,"",vf_vaoc); rn+=1
                         for _,vrow in vao_grp.iterrows():
                             vva=int(vrow["GW_Assigned"]); vvc=int(vrow["GW_Done"]); vvp=float(vrow["Pct_v"])
                             vgd=vvp>0.25 or (vva==0 and vvc>0)
@@ -808,12 +809,13 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                     va_c = int(vao_grp["GW_Done"].sum())
                     va_p = (va_c / va_a) if va_a > 0 else (1.0 if va_c > 0 else 0.0)
                     _vgd = va_p > 0.25 or (va_a == 0 and va_c > 0)
-                    # VAO header (blue)
+                    # VAO header: name + village count, blank totals
                     _vprows.append({"t": ["", f"{vao_nm}  [{len(vao_grp)} villages]",
-                                          str(va_a), str(va_c), f"{va_p*100:.1f}%"],
+                                          "", "", ""],
                                     "bg": ["#C9DAF8"]*5, "bold": True,
-                                    "pct": None, "kind": "vao"})
-                    for _, vrow in vao_grp.iterrows():
+                                    "pct": None, "kind": "vao", "group_start": True})
+                    # ── villages only — no duplicate totals ──
+                    for _idx, (_, vrow) in enumerate(vao_grp.iterrows()):
                         vva=int(vrow["GW_Assigned"]); vvc=int(vrow["GW_Done"]); vvp=float(vrow["Pct_v"])
                         vgd=vvp>0.25 or (vva==0 and vvc>0)
                         _alt="#FFFFFF" if _vpsno%2==1 else "#EFF3FF"
@@ -822,7 +824,8 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                                         "bg": [_alt]*4+["#C6EFCE" if vgd else "#FFC7CE"],
                                         "bold": False,
                                         "pct": "#006100" if vgd else "#9C0006",
-                                        "kind": "village"})
+                                        "kind": "village",
+                                        "group_start": False})
                         _vpsno += 1
                     # Subtotal — yellow bg + conditional green/red % cell
                     _vprows.append({"t": ["", f"Sub-Total — {vao_nm}",
@@ -843,26 +846,26 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                 
                 # Smart chunking: keep each VAO's villages together on same page
                 def _smart_chunk(rows, max_rows):
-                    """Chunk rows keeping VAO groups intact (never split across pages)"""
+                    """Chunk rows keeping VAO groups intact (never split across pages).
+                    Groups are detected by group_start=True on the first village row."""
                     chunks = []
                     current_page = []
                     current_vao_group = []
-                    
+
                     for row in rows:
-                        if row["kind"] == "vao":
-                            # Start of new VAO — flush previous group if exists
+                        if row.get("group_start"):
+                            # First village of a new VAO — flush previous group
                             if current_vao_group:
                                 if len(current_page) + len(current_vao_group) <= max_rows:
                                     current_page.extend(current_vao_group)
                                 else:
-                                    # Current page full — save it and start new page
                                     if current_page:
                                         chunks.append(current_page)
                                     current_page = current_vao_group[:]
                                 current_vao_group = []
                             current_vao_group.append(row)
                         elif row["kind"] == "grandtotal":
-                            # End of data — flush final VAO group + grand total
+                            # End — flush final group + grand total
                             if current_vao_group:
                                 if len(current_page) + len(current_vao_group) <= max_rows:
                                     current_page.extend(current_vao_group)
@@ -874,9 +877,9 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                             if current_page:
                                 chunks.append(current_page)
                         else:
-                            # Village or subtotal — part of current VAO group
+                            # Remaining villages + subtotal — part of current VAO group
                             current_vao_group.append(row)
-                    
+
                     return chunks
                 
                 _chunks = _smart_chunk(_vprows, _VPP)
