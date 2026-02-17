@@ -637,18 +637,30 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         b_xl.seek(0)
         del out; gc.collect()
 
-        # ── 1b. VAO PDF  (A4 portrait · 2-line title · no gap · classy) ─
+        # ── 1b. VAO Summary — single-page PNG image (portrait, auto-fit) ─
         _vao_df = fin[["S.No","Name","Assigned","Completed","Pct"]].copy()
         _vao_df.loc[len(_vao_df)] = [None,"Grand Total",tot_a,tot_c,prog]
-        _nr    = len(_vao_df)
-        # Auto-fit name column: scale from longest name, clamped 0.40–0.58
-        _nm_w  = min(0.58, max(0.40, max(len(str(n)) for n in _vao_df["Name"]) * 0.012))
+        _nr = len(_vao_df)
+
+        # Dynamic figure height: each data row = 0.28 in, header = 0.45 in, title = 0.90 in
+        _row_h_in = 0.28
+        _hdr_h_in = 0.45
+        _ttl_h_in = 0.90
+        _fig_w    = 8.27                           # A4 portrait width
+        _fig_h    = _ttl_h_in + _hdr_h_in + (_nr * _row_h_in) + 0.20  # +padding
+        _fp       = 9                              # fixed readable font size
+
+        # Auto-fit name column from longest name (clamped)
+        _nm_w  = min(0.56, max(0.38, max(len(str(n)) for n in _vao_df["Name"]) * 0.011))
         _rem   = 1.0 - _nm_w - 0.07
         _cw_vao= [0.07, _nm_w, round(_rem/3,3), round(_rem/3,3), round(_rem/3+0.001,3)]
-        _fp    = max(6, min(9, int(460 / (_nr + 2))))
-        _hdr_h = 0.052; _avail = 0.86
-        _rh    = (_avail - _hdr_h) / _nr       # uniform row height
 
+        # Row heights as axes fractions (computed from figure dimensions)
+        _tbl_h     = _fig_h - _ttl_h_in           # height available for table in inches
+        _hdr_frac  = _hdr_h_in / _tbl_h           # header height as fraction of table axes
+        _row_frac  = _row_h_in / _tbl_h           # data row height as fraction
+
+        # Build cell text + colours
         _ct, _cc, _pmeta = [], [], []
         for _, _r in _vao_df.iterrows():
             _p  = float(_r["Pct"]); _gt = pd.isna(_r["S.No"])
@@ -661,21 +673,28 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                 _cc.append([_alt,_alt,_alt,_alt,"#C6EFCE" if _gd else "#FFC7CE"])
             _pmeta.append((_gt, _gd))
 
-        _fig_vp, _ax_vp = plt.subplots(figsize=_A4P)
+        _fig_vp, _ax_vp = plt.subplots(figsize=(_fig_w, _fig_h))
         _ax_vp.axis("off")
-        _ax_vp.set_position([0.03, 0.02, 0.94, _avail])   # table axes
-        # 2-line title on figure canvas — sits directly above accent bar, zero gap
+        # Table axes: occupies everything below the title area
+        _tbl_frac = _tbl_h / _fig_h               # fraction of figure for table
+        _ttl_frac = _ttl_h_in / _fig_h
+        _ax_vp.set_position([0.03, 0.01, 0.94, _tbl_frac - 0.01])
+
+        # Title block (2 lines) — directly on figure canvas
         _tp = title_txt.split("\n")
-        _fig_vp.text(0.5, 0.999, textwrap.fill(_tp[0], width=68),
-                     ha="center", va="top", fontsize=9, fontweight="bold",
+        _fig_vp.text(0.5, 0.999, textwrap.fill(_tp[0], width=72),
+                     ha="center", va="top", fontsize=10, fontweight="bold",
                      color="#1C2833", multialignment="center",
                      transform=_fig_vp.transFigure)
-        _fig_vp.text(0.5, 0.956, _tp[1] if len(_tp) > 1 else "",
-                     ha="center", va="top", fontsize=7.5, color="#5f6368",
+        _fig_vp.text(0.5, 1.0 - _ttl_frac*0.35,
+                     _tp[1] if len(_tp) > 1 else "",
+                     ha="center", va="top", fontsize=8, color="#5f6368",
                      style="italic", transform=_fig_vp.transFigure)
-        _bar = _fig_vp.add_axes([0.03, 0.878, 0.94, 0.004])
-        _bar.set_facecolor("#1565C0"); _bar.axis("off")    # accent line
+        # Accent bar
+        _bar = _fig_vp.add_axes([0.03, 1.0 - _ttl_frac + 0.005, 0.94, 0.003])
+        _bar.set_facecolor("#1565C0"); _bar.axis("off")
 
+        # Table fills axes completely → auto-fit all rows
         _tv = _ax_vp.table(cellText=_ct,
             colLabels=["S.No","VAO Full Name","Assigned","Completed","% Done"],
             cellColours=_cc, colWidths=_cw_vao,
@@ -683,34 +702,33 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         _tv.auto_set_font_size(False); _tv.set_fontsize(_fp)
 
         for (_ri, _ci), _c in _tv.get_celld().items():
-            if _ri == 0:                                   # header row
+            if _ri == 0:
                 _c.set_facecolor("#1565C0")
                 _c.set_text_props(weight="bold", fontsize=_fp+0.5, color="white")
                 _c.set_edgecolor("#0D47A1"); _c.set_linewidth(0.6)
-                _c.set_height(_hdr_h)
+                _c.set_height(_hdr_frac)
             else:
                 _gt_r, _gd_r = _pmeta[_ri - 1]
-                _c.set_height(_rh); _c.PAD = 0.10
-                if _gt_r:                                  # Grand Total — dark navy
+                _c.set_height(_row_frac); _c.PAD = 0.10
+                if _gt_r:
                     _c.set_facecolor("#1C2833")
                     _c.set_text_props(weight="bold", fontsize=_fp+0.5, color="white")
                     _c.set_edgecolor("#0D1B2A"); _c.set_linewidth(0.8)
                 else:
                     _c.set_edgecolor("#D6E0EE"); _c.set_linewidth(0.25)
-                    if _ci == 4:                           # % column — conditional colour
+                    if _ci == 4:
                         _c.set_text_props(
                             color="#006100" if _gd_r else "#9C0006",
                             weight="bold", fontsize=_fp)
-                    if _ri % 5 == 0:                       # subtle group separator
+                    if _ri % 5 == 0:
                         _c.set_linewidth(0.6)
             _c.get_text().set_ha("left" if _ci == 1 else "center")
-            _c.get_text().set_wrap(True)
 
-        b_xl_pdf = io.BytesIO()
-        with PdfPages(b_xl_pdf) as _pp:
-            _pp.savefig(_fig_vp, dpi=150)
+        b_xl_img = io.BytesIO()
+        plt.savefig(b_xl_img, format="png", dpi=150, bbox_inches="tight",
+                    pad_inches=0.08, facecolor="white")
         plt.close(_fig_vp)
-        b_xl_pdf.seek(0)
+        b_xl_img.seek(0)
         del _vao_df, _ct, _cc, _pmeta; gc.collect()
 
         # ── 2a. Village Excel (xlsxwriter, previous style) ───────────
@@ -1012,7 +1030,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
 
         del p; gc.collect(); plt.close("all")
         logger.info("Report OK: %s", taluk)
-        return {"x_xl": b_xl, "x_pdf": b_xl_pdf,
+        return {"x_xl": b_xl, "x_pdf": b_xl_img,
                 "v_xl": b_vill_xl, "v_pdf": b_vill_pdf,
                 "c": b_card, "g": b_g, "metrics": metrics}
 
@@ -1398,8 +1416,8 @@ def main():
                                    "VAO_Summary_Report.xlsx",_XLSX_MIME,
                                    use_container_width=True,type="primary")
             with b2:
-                st.download_button("📄 PDF",d["x_pdf"],
-                                   "VAO_Summary_Report.pdf",_PDF_MIME,
+                st.download_button("🖼️ Image",d["x_pdf"],
+                                   "VAO_Summary_Report.png","image/png",
                                    use_container_width=True,type="primary")
         st.markdown("<div style='margin:1.5rem 0;border-bottom:1px solid #f1f3f4'></div>",unsafe_allow_html=True)
 
