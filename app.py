@@ -630,7 +630,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                 rn=4+ri; last=ri==len(out)-1
                 for ci,v in enumerate(row):
                     if last:    ws2.write(rn,ci,v,fp_ if ci==4 else ft2)
-                    elif ci==4: ws2.write(rn,ci,v,fg_ if (v>0.25 or (row[2]==0 and row[3]>0)) else fr_)
+                    elif ci==4: ws2.write(rn,ci,v,fg_ if (v>0.40 or (row[2]==0 and row[3]>0)) else fr_)
                     else:       ws2.write(rn,ci,v,fb)
             ws2.set_column(0,0,8); ws2.set_column(1,1,35); ws2.set_column(2,4,15)
             ws2.set_row(0,45)
@@ -664,7 +664,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         _ct, _cc, _pmeta = [], [], []
         for _, _r in _vao_df.iterrows():
             _p  = float(_r["Pct"]); _gt = pd.isna(_r["S.No"])
-            _gd = _p > 0.25 or (float(_r["Assigned"]) == 0 and float(_r["Completed"]) > 0)
+            _gd = _p > 0.40 or (float(_r["Assigned"]) == 0 and float(_r["Completed"]) > 0)
             _ct.append(["" if _gt else str(int(_r["S.No"])), str(_r["Name"]),
                         str(int(_r["Assigned"])), str(int(_r["Completed"])), f"{_p*100:.1f}%"])
             if _gt:   _cc.append(["#1C2833"]*5)
@@ -775,7 +775,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                         vws.write(rn,5,"",vf_vaoc); rn+=1
                         for _,vrow in vao_grp.iterrows():
                             vva=int(vrow["GW_Assigned"]); vvc=int(vrow["GW_Done"]); vvp=float(vrow["Pct_v"])
-                            vgd=vvp>0.25 or (vva==0 and vvc>0)
+                            vgd=vvp>0.40 or (vva==0 and vvc>0)
                             vws.write(rn,0,sno,vf_bodc); vws.write(rn,1,"",vf_bodc)
                             vws.write(rn,2,str(vrow["Village"]),vf_bod)
                             vws.write(rn,3,vva,vf_bodc); vws.write(rn,4,vvc,vf_bodc)
@@ -808,7 +808,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                     va_a = int(vao_grp["GW_Assigned"].sum())
                     va_c = int(vao_grp["GW_Done"].sum())
                     va_p = (va_c / va_a) if va_a > 0 else (1.0 if va_c > 0 else 0.0)
-                    _vgd = va_p > 0.25 or (va_a == 0 and va_c > 0)
+                    _vgd = va_p > 0.40 or (va_a == 0 and va_c > 0)
                     # VAO header: name + village count, blank totals
                     _vprows.append({"t": ["", f"{vao_nm}  [{len(vao_grp)} villages]",
                                           "", "", ""],
@@ -817,7 +817,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
                     # ── villages only — no duplicate totals ──
                     for _idx, (_, vrow) in enumerate(vao_grp.iterrows()):
                         vva=int(vrow["GW_Assigned"]); vvc=int(vrow["GW_Done"]); vvp=float(vrow["Pct_v"])
-                        vgd=vvp>0.25 or (vva==0 and vvc>0)
+                        vgd=vvp>0.40 or (vva==0 and vvc>0)
                         _alt="#FFFFFF" if _vpsno%2==1 else "#EFF3FF"
                         _vprows.append({"t": [str(_vpsno), str(vrow["Village"]),
                                                str(vva), str(vvc), f"{vvp*100:.1f}%"],
@@ -1004,7 +1004,7 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         fig_g,ax=plt.subplots(figsize=(14,max(8,len(p)*0.55)))
         p["N"]=p["Name"].apply(lambda x: f"{x.split()[0]} {x.split()[1][0]}." if len(x.split())>1 else x)
         ys=np.arange(len(p))
-        cols2=[AppConfig.COLORS["success"] if (pc>0.25 or (a==0 and c>0)) else AppConfig.COLORS["danger"]
+        cols2=[AppConfig.COLORS["success"] if (pc>0.40 or (a==0 and c>0)) else AppConfig.COLORS["danger"]
                for pc,a,c in zip(p["Pct"],p["Assigned"],p["Completed"])]
         ax.barh(ys,p["Assigned"],color=AppConfig.COLORS["neutral"],label="Assigned",height=0.7)
         ax.barh(ys,p["Completed"],color=cols2,height=0.5)
@@ -1032,10 +1032,16 @@ def generate_all_reports(df_assign: pd.DataFrame, df_monitor: pd.DataFrame, talu
         b_g.seek(0); plt.close(fig_g)  # close immediately
 
         del p; gc.collect(); plt.close("all")
+        # ── Historical tracking data for comparison ──
+        history_df = fin[["Name","Assigned","Completed","Pct"]].copy()
+        history_df["Timestamp"] = ts
+        history_df["Taluk"] = taluk
+        
         logger.info("Report OK: %s", taluk)
         return {"x_xl": b_xl, "x_pdf": b_xl_img,
                 "v_xl": b_vill_xl, "v_pdf": b_vill_pdf,
-                "c": b_card, "g": b_g, "metrics": metrics}
+                "c": b_card, "g": b_g, "metrics": metrics,
+                "history": history_df, "timestamp": ts, "taluk": taluk}
 
     except ValueError as e: raise RuntimeError(str(e)) from None
     except Exception as e:
@@ -1254,6 +1260,8 @@ def render_admin():
 def main():
     inject_css()
     if "logged_in" not in st.session_state: st.session_state["logged_in"]=False
+    if "sheets_prev_data" not in st.session_state: st.session_state["sheets_prev_data"]=None
+    if "sheets_saved" not in st.session_state: st.session_state["sheets_saved"]=False
     if st.session_state["logged_in"]: check_session_timeout()
     check_and_auto_sync()   # silent end-of-day sync every page interaction (23:45–23:59 IST)
 
@@ -1390,6 +1398,147 @@ def main():
             st.warning("⚠️ Cached report is from an older version. Please click **⚡ Generate Reports** again.")
             st.stop()
         st.success("✅ Reports Generated"); st.markdown("---")
+        
+        # ── Progress Comparison & Google Sheets Integration ──────────────────
+        comp_col1, comp_col2 = st.columns([0.7, 0.3])
+        
+        with comp_col2:
+            # Google Sheets save button
+            if st.button("📊 Save to Google Sheets", use_container_width=True, type="primary",
+                        help="Save current progress to Google Sheets and compare with previous data"):
+                try:
+                    with st.spinner("Connecting to Google Sheets..."):
+                        # Import gspread for Google Sheets API
+                        try:
+                            import gspread
+                            from google.oauth2.service_account import Credentials
+                        except ImportError:
+                            st.error("⚠️ Google Sheets integration requires: `pip install gspread google-auth`")
+                            st.stop()
+                        
+                        # Check for credentials file
+                        creds_path = "google_sheets_credentials.json"
+                        if not os.path.exists(creds_path):
+                            st.error("⚠️ Missing `google_sheets_credentials.json` file")
+                            st.info("""
+                            **Setup Instructions:**
+                            1. Go to Google Cloud Console
+                            2. Enable Google Sheets API
+                            3. Create Service Account
+                            4. Download credentials as `google_sheets_credentials.json`
+                            5. Place in app directory
+                            6. Share your Google Sheet with the service account email
+                            """)
+                            st.stop()
+                        
+                        # Authenticate
+                        scopes = ['https://www.googleapis.com/auth/spreadsheets']
+                        creds = Credentials.from_service_account_file(creds_path, scopes=scopes)
+                        client = gspread.authorize(creds)
+                        
+                        # Open or create spreadsheet
+                        sheet_name = f"{d['taluk']}_VAO_Progress_Tracking"
+                        try:
+                            spreadsheet = client.open(sheet_name)
+                        except gspread.SpreadsheetNotFound:
+                            spreadsheet = client.create(sheet_name)
+                            st.info(f"✨ Created new spreadsheet: {sheet_name}")
+                        
+                        # Get or create worksheet for current month
+                        from datetime import datetime
+                        month_sheet = datetime.now().strftime("%Y-%m")
+                        try:
+                            worksheet = spreadsheet.worksheet(month_sheet)
+                        except gspread.WorksheetNotFound:
+                            worksheet = spreadsheet.add_worksheet(month_sheet, rows=100, cols=10)
+                        
+                        # Prepare data to save
+                        curr_df = d["history"].copy()
+                        curr_df["Timestamp"] = d["timestamp"]
+                        
+                        # Try to fetch previous data from sheet for comparison
+                        prev_data = None
+                        try:
+                            existing_data = worksheet.get_all_records()
+                            if len(existing_data) > 0:
+                                prev_df = pd.DataFrame(existing_data)
+                                # Get most recent timestamp
+                                if "Timestamp" in prev_df.columns:
+                                    prev_df_sorted = prev_df.sort_values("Timestamp", ascending=False)
+                                    latest_timestamp = prev_df_sorted.iloc[0]["Timestamp"]
+                                    prev_data = prev_df_sorted[prev_df_sorted["Timestamp"] == latest_timestamp]
+                        except Exception:
+                            pass
+                        
+                        # Append new data to sheet
+                        if worksheet.row_count == 0 or worksheet.cell(1, 1).value == "":
+                            # First time - write headers
+                            headers = ["Name", "Assigned", "Completed", "Pct", "Timestamp", "Taluk"]
+                            worksheet.append_row(headers)
+                        
+                        # Append all VAO rows
+                        for _, row in curr_df.iterrows():
+                            worksheet.append_row([
+                                row["Name"],
+                                int(row["Assigned"]),
+                                int(row["Completed"]),
+                                float(row["Pct"]),
+                                row["Timestamp"],
+                                row["Taluk"]
+                            ])
+                        
+                        st.success(f"✅ Saved to Google Sheets: [{sheet_name}]({spreadsheet.url})")
+                        
+                        # Store for session comparison
+                        st.session_state.sheets_prev_data = prev_data
+                        st.session_state.sheets_saved = True
+                        st.rerun()
+                        
+                except Exception as e:
+                    st.error(f"❌ Error saving to Google Sheets: {str(e)}")
+                    logger.error("Google Sheets save error: %s", traceback.format_exc())
+        
+        with comp_col1:
+            # Show comparison if we just saved to sheets
+            if st.session_state.get("sheets_saved") and st.session_state.get("sheets_prev_data") is not None:
+                prev_df = st.session_state.sheets_prev_data
+                curr_df = d["history"]
+                
+                # Merge on VAO Name to compare
+                comp = prev_df[["Name","Completed"]].rename(columns={"Completed":"Previous"})
+                comp["Previous"] = pd.to_numeric(comp["Previous"], errors='coerce').fillna(0)
+                comp = comp.merge(curr_df[["Name","Completed"]].rename(columns={"Completed":"Current"}),
+                                 on="Name", how="outer").fillna(0)
+                comp["Progress"] = comp["Current"] - comp["Previous"]
+                comp["Progress"] = comp["Progress"].astype(int)
+                comp = comp[comp["Progress"] != 0].sort_values("Progress", ascending=False)
+                
+                if len(comp) > 0:
+                    prev_ts = prev_df.iloc[0]["Timestamp"] if "Timestamp" in prev_df.columns else "previous upload"
+                    st.info(f"📊 **Progress Since Last Save to Sheets** ({prev_ts})")
+                    
+                    # Show top improvers
+                    improved = comp[comp["Progress"] > 0]
+                    if len(improved) > 0:
+                        st.markdown(f"**🎯 Top Performers** ({len(improved)} VAOs with new completions)")
+                        top5 = improved.head(5)
+                        for _, row in top5.iterrows():
+                            delta_pct = (row["Progress"]/row["Previous"]*100) if row["Previous"]>0 else 100
+                            st.metric(row["Name"], 
+                                     f"{int(row['Current'])} completed",
+                                     f"+{int(row['Progress'])} ({delta_pct:+.0f}%)",
+                                     delta_color="normal")
+                    
+                    # Show summary stats
+                    total_new = comp["Progress"].sum()
+                    if total_new > 0:
+                        st.success(f"✨ **Total New Completions**: {int(total_new)} GW schedules across all VAOs")
+                else:
+                    st.info("ℹ️ No changes detected since last save")
+            elif not st.session_state.get("sheets_saved"):
+                st.info("💡 Click **'Save to Google Sheets'** to track progress over time")
+        
+        st.markdown("---")
         _XLSX_MIME="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         _PDF_MIME ="application/pdf"
 
